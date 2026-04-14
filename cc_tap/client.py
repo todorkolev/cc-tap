@@ -1,0 +1,162 @@
+"""HTTP client for the Claude Code Remote session API."""
+
+import uuid
+from dataclasses import dataclass
+
+import requests
+
+API_BASE_URL = "https://api.anthropic.com"
+CCR_BETA = "ccr-byoc-2025-07-29"
+
+
+@dataclass
+class CCRSession:
+    """A Claude Code Remote session."""
+
+    id: str
+    title: str
+    status: str
+    connection_status: str
+    created_at: str
+    updated_at: str
+
+    @property
+    def session_id(self) -> str:
+        return self.id if self.id.startswith("session_") else f"session_{self.id}"
+
+    @property
+    def cse_id(self) -> str:
+        raw = self.id.replace("session_", "").replace("cse_", "")
+        return f"cse_{raw}"
+
+
+class CCRClient:
+    """Client for the Claude Code Remote session API.
+
+    Talks to api.anthropic.com using OAuth Bearer tokens.
+    """
+
+    def __init__(self, access_token: str, org_uuid: str):
+        self.org_uuid = org_uuid
+        self.client_id = str(uuid.uuid4())
+        self.http = requests.Session()
+        self.http.headers.update(
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": CCR_BETA,
+                "x-organization-uuid": org_uuid,
+            }
+        )
+
+    def _sid(self, session_id: str) -> str:
+        return session_id if session_id.startswith("session_") else f"session_{session_id}"
+
+    def _cse(self, session_id: str) -> str:
+        raw = session_id.replace("session_", "").replace("cse_", "")
+        return f"cse_{raw}"
+
+    def list_sessions(self) -> list[CCRSession]:
+        """List all remote sessions."""
+        resp = self.http.get(f"{API_BASE_URL}/v1/sessions")
+        resp.raise_for_status()
+        return [
+            CCRSession(
+                id=s["id"],
+                title=s.get("title") or "Untitled",
+                status=s.get("session_status", "unknown"),
+                connection_status=s.get("connection_status", "unknown"),
+                created_at=s.get("created_at", ""),
+                updated_at=s.get("updated_at", ""),
+            )
+            for s in resp.json().get("data", [])
+        ]
+
+    def get_session(self, session_id: str) -> dict:
+        """Get a single session's details."""
+        resp = self.http.get(f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}")
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_events(self, session_id: str, limit: int = 1000) -> list[dict]:
+        """Get conversation history for a session."""
+        resp = self.http.get(
+            f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}/events",
+            params={"limit": limit},
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
+    def send_presence(self, session_id: str) -> int:
+        """Send client presence heartbeat. Returns seconds until next heartbeat."""
+        resp = self.http.post(
+            f"{API_BASE_URL}/v1/code/sessions/{self._cse(session_id)}/client/presence",
+            json={"client_id": self.client_id},
+        )
+        resp.raise_for_status()
+        return resp.json().get("refresh_after_seconds", 20)
+
+    def send_message(self, session_id: str, message: str) -> dict:
+        """Send a user message to a session."""
+        sid = self._sid(session_id)
+        event = {
+            "type": "user",
+            "uuid": str(uuid.uuid4()),
+            "session_id": sid,
+            "parent_tool_use_id": None,
+            "message": {"role": "user", "content": message},
+        }
+        resp = self.http.post(
+            f"{API_BASE_URL}/v1/sessions/{sid}/events",
+            json={"events": [event]},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def post_control_response(
+        self,
+        session_id: str,
+        request_id: str,
+        behavior: str = "allow",
+        updated_input: dict | None = None,
+        message: str = "",
+    ) -> dict:
+        """Respond to a tool approval request."""
+        sid = self._sid(session_id)
+        response_inner: dict = {"behavior": behavior}
+        if behavior == "allow":
+            response_inner["toolUseID"] = request_id
+            if updated_input:
+                response_inner["updatedInput"] = updated_input
+        else:
+            response_inner["message"] = message or "Denied by user"
+
+        event = {
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": response_inner,
+            },
+        }
+        resp = self.http.post(
+            f"{API_BASE_URL}/v1/sessions/{sid}/events",
+            json={"events": [event]},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def extract_text(content) -> str:
+    """Extract all text from a message content field."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "\n".join(parts)
+    return ""

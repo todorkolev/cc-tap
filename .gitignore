@@ -1,0 +1,11 @@
+*.har
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+.coverage
+cc_tap/_version.py
