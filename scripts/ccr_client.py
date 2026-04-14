@@ -62,9 +62,10 @@ def load_oauth_token() -> dict | None:
         try:
             username = os.environ.get("USER", "claude-code-user")
             result = subprocess.run(
-                ["security", "find-generic-password", "-a", username,
-                 "-w", "-s", "Claude Code-credentials"],
-                capture_output=True, text=True, timeout=5,
+                ["security", "find-generic-password", "-a", username, "-w", "-s", "Claude Code-credentials"],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 raw = result.stdout.strip()
@@ -127,30 +128,33 @@ def load_org_uuid(access_token: str = "") -> str | None:
 class CCRClient:
     """Client for Claude Code Remote session API."""
 
-    def __init__(self, access_token: str = "", org_uuid: str = "",
-                 cookie: str = "", base_url: str = ""):
+    def __init__(self, access_token: str = "", org_uuid: str = "", cookie: str = "", base_url: str = ""):
         self.org_uuid = org_uuid
         self.client_id = str(uuid.uuid4())
         self.http = requests.Session()
 
         if access_token:
             self.base_url = base_url or API_BASE_URL
-            self.http.headers.update({
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": CCR_BETA,
-            })
+            self.http.headers.update(
+                {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": CCR_BETA,
+                }
+            )
             self.access_token = access_token
         elif cookie:
             self.base_url = base_url or WEB_BASE_URL
-            self.http.headers.update({
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": CCR_BETA,
-                "anthropic-client-feature": "ccr",
-                "cookie": cookie,
-            })
+            self.http.headers.update(
+                {
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": CCR_BETA,
+                    "anthropic-client-feature": "ccr",
+                    "cookie": cookie,
+                }
+            )
             self.access_token = ""
         else:
             raise ValueError("Either access_token or cookie is required")
@@ -218,10 +222,14 @@ class CCRClient:
         resp.raise_for_status()
         return resp.json()
 
-    def post_control_response(self, session_id: str, request_id: str,
-                               behavior: str = "allow",
-                               updated_input: dict | None = None,
-                               message: str = "") -> dict:
+    def post_control_response(
+        self,
+        session_id: str,
+        request_id: str,
+        behavior: str = "allow",
+        updated_input: dict | None = None,
+        message: str = "",
+    ) -> dict:
         sid = self._sid(session_id)
         response_inner = {"behavior": behavior}
         if behavior == "allow":
@@ -349,7 +357,7 @@ class BackgroundPoller:
 
                 with self._lock:
                     if current > self.event_count:
-                        new_events = events[self.event_count:]
+                        new_events = events[self.event_count :]
                         self.event_count = current
 
                         for ev in new_events:
@@ -368,7 +376,7 @@ class BackgroundPoller:
                 # Also send presence keepalive periodically
                 self.client.send_presence(self.session_id)
 
-            except Exception:
+            except Exception:  # noqa: S110
                 pass  # Silently retry on network errors
 
             self._stop.wait(timeout=1.5)
@@ -444,7 +452,9 @@ def interactive_session(client: CCRClient, session: CCRSession) -> None:
                 tool_name = inner.get("tool_name", "?")
                 print(f"  Approving: {tool_name}")
                 client.post_control_response(
-                    session.id, request_id, "allow",
+                    session.id,
+                    request_id,
+                    "allow",
                     updated_input=inner.get("input"),
                 )
                 print("  Approved.")
@@ -500,8 +510,7 @@ def main():
     if creds:
         access_token = creds.get("accessToken", "")
         if not org_uuid:
-            org_uuid = (creds.get("organizationUuid", "")
-                        or load_org_uuid(access_token) or "")
+            org_uuid = creds.get("organizationUuid", "") or load_org_uuid(access_token) or ""
 
     if not access_token and not cookie:
         print("No credentials found.")
