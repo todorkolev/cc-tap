@@ -4,28 +4,30 @@ Reverse-engineered from browser HAR captures and API exploration, April 2026.
 
 ## Overview
 
-Claude Code Remote (CCR) sessions run on Anthropic-managed VMs. Communication uses two channels:
-- **HTTP REST** — for session management (list, create, send messages)
-- **WebSocket** — for real-time streaming (assistant responses, tool approval requests)
+Claude Code Remote (CCR) sessions run on Anthropic-managed VMs. Communication uses:
+- **HTTP REST** — for session management (list, read events, send messages)
+- **WebSocket** — for real-time streaming and tool approval relay (browser only)
+- **Polling** — for external clients that can't access the WebSocket
 
 ## Architecture
 
 ```
-┌─────────────┐    HTTP POST (messages)    ┌──────────────────────┐
-│             │ ──────────────────────────> │                      │
-│  Client     │                            │  api.anthropic.com   │
-│  (CLI/Web)  │    WebSocket (streaming)   │                      │
-│             │ <═════════════════════════> │  /v1/sessions/ws/... │
-└─────────────┘                            └──────────────────────┘
-                                                     │
-                                                     ▼
-                                            ┌──────────────────┐
-                                            │  CCR VM          │
-                                            │  (session worker) │
-                                            └──────────────────┘
+┌─────────────┐    HTTP POST (messages)     ┌──────────────────────┐
+│  External   │ ───────────────────────────> │                      │
+│  Client     │    HTTP GET (poll events)    │  api.anthropic.com   │
+│  (cc-tap)   │ <─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │                      │
+└─────────────┘                             └──────────────────────┘
+
+┌─────────────┐    WebSocket (streaming +   ┌──────────────────────┐
+│  Web UI     │     tool approval relay)    │                      │
+│  (browser)  │ <═══════════════════════>   │  claude.ai (proxy)   │
+└─────────────┘    (Cloudflare protected)   └──────────────────────┘
 ```
 
-The web UI at `claude.ai` proxies to `api.anthropic.com`. The CLI talks directly to the API.
+Key limitation: tool approval (`control_response` events) only reach the session
+runtime via WebSocket. HTTP-posted control_responses are stored in event history
+but not pushed to the running session. The WebSocket at `claude.ai` is behind
+Cloudflare bot protection, making it inaccessible from non-browser clients.
 
 ## Base URLs
 
@@ -286,7 +288,7 @@ viable approach. Works with OAuth Bearer token against `api.anthropic.com`. Poll
 4. **Start heartbeat** — `POST /v1/code/sessions/cse_{id}/client/presence` every 20s
 5. **Send message** — `POST /v1/sessions/{id}/events` with user event
 6. **Poll for response** — `GET /v1/sessions/{id}/events?limit=1000` every 1-2s
-7. **Approve/deny tools** — `POST /v1/sessions/{id}/events` with control_response event
+7. **Tool approval** — visible via polling but must be handled in the web UI or CC terminal (HTTP-posted control_responses don't reach the session runtime)
 
 ## OAuth Token Location
 
