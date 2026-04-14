@@ -68,8 +68,8 @@ Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear
 
 ## Limitations
 
-- **Tool approval** works for cloud-hosted sessions. For local CC sessions, approvals must be done in the CC terminal (the API can observe but not control local permission prompts).
-- **Not real-time** — uses polling, not streaming. ~1.5s latency.
+- **Tool approval** — `approve_tool` / `deny_tool` post events via HTTP, but the session runtime only picks up approvals via WebSocket (which is behind Cloudflare bot protection). You can see pending tool requests, but must approve them in the CC terminal or claude.ai/code web UI.
+- **Not real-time** — uses HTTP polling, not WebSocket streaming. ~1.5s latency.
 - **Undocumented API** — uses internal Anthropic endpoints that may change without notice.
 - **Local only** — reads credentials from the local machine. Can't be deployed as a remote service.
 
