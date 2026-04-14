@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import time
 
 from mcp.server.fastmcp import FastMCP
 
@@ -134,6 +135,90 @@ def send_message(session_id: str, message: str) -> str:
     client = _get_client()
     result = client.send_message(session_id, message)
     return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interval: float = 1.5) -> str:
+    """Send a message to a Claude Code session and wait for the full response.
+
+    Polls until the session produces a result event (turn complete), then returns
+    the assistant's response. Use this when you need the other session's answer.
+
+    Args:
+        session_id: The session ID to send to.
+        message: The message text to send.
+        timeout: Max seconds to wait for a response (default 120).
+        poll_interval: Seconds between polls (default 1.5).
+    """
+    client = _get_client()
+
+    # Get baseline event count before sending
+    events_before = client.get_events(session_id)
+    baseline = len(events_before)
+
+    # Send the message
+    client.send_message(session_id, message)
+    client.send_presence(session_id)
+
+    # Poll for new events until we see a result
+    deadline = time.time() + timeout
+    collected_text: list[str] = []
+    tool_requests: list[dict] = []
+
+    while time.time() < deadline:
+        time.sleep(poll_interval)
+        events = client.get_events(session_id)
+
+        if len(events) <= baseline:
+            continue
+
+        new_events = events[baseline:]
+        baseline = len(events)
+
+        for ev in new_events:
+            if ev["type"] == "assistant":
+                text = extract_text(ev.get("message", {}).get("content", []))
+                if text:
+                    collected_text.append(text)
+            elif ev["type"] == "control_request":
+                req = ev.get("request", {})
+                tool_requests.append(
+                    {
+                        "tool_name": req.get("tool_name", "?"),
+                        "description": req.get("description", ""),
+                        "request_id": req.get("tool_use_id") or ev.get("request_id", ""),
+                        "input": req.get("input", {}),
+                    }
+                )
+            elif ev["type"] == "result":
+                # Turn complete
+                result = {"status": "complete", "response": "\n\n".join(collected_text)}
+                if tool_requests:
+                    result["pending_tool_requests"] = tool_requests
+                cost = ev.get("total_cost_usd", 0)
+                if cost:
+                    result["cost_usd"] = cost
+                return json.dumps(result, indent=2)
+
+        # If there are pending tool requests, return early so the caller can decide
+        if tool_requests:
+            return json.dumps(
+                {
+                    "status": "waiting_for_tool_approval",
+                    "response_so_far": "\n\n".join(collected_text),
+                    "pending_tool_requests": tool_requests,
+                },
+                indent=2,
+            )
+
+    return json.dumps(
+        {
+            "status": "timeout",
+            "response_so_far": "\n\n".join(collected_text),
+            "message": f"No result event within {timeout}s. Session may still be processing.",
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()

@@ -55,7 +55,8 @@ Add to `claude_desktop_config.json`:
 | `get_session_info` | Get details about a specific session |
 | `read_session` | Read recent conversation from a session |
 | `get_session_events` | Get raw events, optionally filtered by type |
-| `send_message` | Send a message to a CC session |
+| `send_message` | Send a message to a CC session (fire and forget) |
+| `send_and_wait` | Send a message and wait for the full response |
 | `approve_tool` | Approve a pending tool use request |
 | `deny_tool` | Deny a pending tool use request |
 
