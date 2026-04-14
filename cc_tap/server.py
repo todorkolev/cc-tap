@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import threading
 import time
 
 from mcp.server.fastmcp import FastMCP
@@ -17,23 +18,24 @@ mcp = FastMCP(
     instructions="Bridge to Claude Code sessions — list, read, and interact with active sessions",
 )
 
-# Module-level client, initialized on startup
 _client: CCRClient | None = None
+_client_lock = threading.Lock()
 
 
 def _get_client() -> CCRClient:
     global _client
-    if _client is None:
-        token_data = load_oauth_token()
-        if not token_data:
-            msg = "No Claude Code credentials found. Run 'claude /login' first."
-            raise RuntimeError(msg)
-        access_token = token_data["accessToken"]
-        org_uuid = load_org_uuid(access_token)
-        if not org_uuid:
-            msg = "Could not determine organization UUID."
-            raise RuntimeError(msg)
-        _client = CCRClient(access_token=access_token, org_uuid=org_uuid)
+    with _client_lock:
+        if _client is None:
+            token_data = load_oauth_token()
+            if not token_data:
+                msg = "No Claude Code credentials found. Run 'claude /login' first."
+                raise RuntimeError(msg)
+            access_token = token_data["accessToken"]
+            org_uuid = load_org_uuid(access_token)
+            if not org_uuid:
+                msg = "Could not determine organization UUID."
+                raise RuntimeError(msg)
+            _client = CCRClient(access_token=access_token, org_uuid=org_uuid)
     return _client
 
 
@@ -83,7 +85,6 @@ def read_session(session_id: str, last_n: int = 20) -> str:
     client = _get_client()
     events = client.get_events(session_id)
 
-    # Filter to user/assistant/result events
     conv = [e for e in events if e["type"] in ("user", "assistant", "result")]
     recent = conv[-last_n:]
 
@@ -152,18 +153,14 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
     """
     client = _get_client()
 
-    # Get baseline event count before sending
     events_before = client.get_events(session_id)
     baseline = len(events_before)
 
-    # Send the message
     client.send_message(session_id, message)
     client.send_presence(session_id)
 
-    # Poll for new events until we see a result
     deadline = time.time() + timeout
     collected_text: list[str] = []
-    tool_requests: list[dict] = []
 
     while time.time() < deadline:
         time.sleep(poll_interval)
@@ -174,6 +171,8 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
 
         new_events = events[baseline:]
         baseline = len(events)
+
+        tool_requests: list[dict] = []
 
         for ev in new_events:
             if ev["type"] == "assistant":
@@ -191,16 +190,12 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
                     }
                 )
             elif ev["type"] == "result":
-                # Turn complete
-                result = {"status": "complete", "response": "\n\n".join(collected_text)}
-                if tool_requests:
-                    result["pending_tool_requests"] = tool_requests
+                result: dict = {"status": "complete", "response": "\n\n".join(collected_text)}
                 cost = ev.get("total_cost_usd", 0)
                 if cost:
                     result["cost_usd"] = cost
                 return json.dumps(result, indent=2)
 
-        # If there are pending tool requests, return early so the caller can decide
         if tool_requests:
             return json.dumps(
                 {
@@ -219,35 +214,6 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
         },
         indent=2,
     )
-
-
-@mcp.tool()
-def approve_tool(session_id: str, request_id: str, tool_input: str = "{}") -> str:
-    """Approve a pending tool use in a Claude Code session.
-
-    Args:
-        session_id: The session ID.
-        request_id: The tool_use_id from the control_request event.
-        tool_input: JSON string of the tool input to approve (usually from the control_request).
-    """
-    client = _get_client()
-    updated_input = json.loads(tool_input) if tool_input else None
-    result = client.post_control_response(session_id, request_id, "allow", updated_input=updated_input)
-    return json.dumps(result, indent=2)
-
-
-@mcp.tool()
-def deny_tool(session_id: str, request_id: str, reason: str = "Denied by user") -> str:
-    """Deny a pending tool use in a Claude Code session.
-
-    Args:
-        session_id: The session ID.
-        request_id: The tool_use_id from the control_request event.
-        reason: Reason for denial.
-    """
-    client = _get_client()
-    result = client.post_control_response(session_id, request_id, "deny", message=reason)
-    return json.dumps(result, indent=2)
 
 
 def main():

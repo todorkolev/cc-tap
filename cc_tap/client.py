@@ -1,5 +1,6 @@
 """HTTP client for the Claude Code Remote session API."""
 
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -7,6 +8,8 @@ import requests
 
 API_BASE_URL = "https://api.anthropic.com"
 CCR_BETA = "ccr-byoc-2025-07-29"
+
+_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
 
 @dataclass
@@ -36,9 +39,10 @@ class CCRClient:
     Talks to api.anthropic.com using OAuth Bearer tokens.
     """
 
-    def __init__(self, access_token: str, org_uuid: str):
+    def __init__(self, access_token: str, org_uuid: str, timeout: tuple[int, int] = (5, 30)):
         self.org_uuid = org_uuid
         self.client_id = str(uuid.uuid4())
+        self.timeout = timeout
         self.http = requests.Session()
         self.http.headers.update(
             {
@@ -50,16 +54,23 @@ class CCRClient:
             }
         )
 
+    def _validate_id(self, session_id: str) -> str:
+        """Strip known prefixes and validate the raw ID format."""
+        raw = session_id.replace("session_", "").replace("cse_", "")
+        if not _SESSION_ID_RE.match(raw):
+            msg = f"Invalid session_id: {session_id!r}"
+            raise ValueError(msg)
+        return raw
+
     def _sid(self, session_id: str) -> str:
-        return session_id if session_id.startswith("session_") else f"session_{session_id}"
+        return f"session_{self._validate_id(session_id)}"
 
     def _cse(self, session_id: str) -> str:
-        raw = session_id.replace("session_", "").replace("cse_", "")
-        return f"cse_{raw}"
+        return f"cse_{self._validate_id(session_id)}"
 
     def list_sessions(self) -> list[CCRSession]:
         """List all remote sessions."""
-        resp = self.http.get(f"{API_BASE_URL}/v1/sessions")
+        resp = self.http.get(f"{API_BASE_URL}/v1/sessions", timeout=self.timeout)
         resp.raise_for_status()
         return [
             CCRSession(
@@ -75,7 +86,7 @@ class CCRClient:
 
     def get_session(self, session_id: str) -> dict:
         """Get a single session's details."""
-        resp = self.http.get(f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}")
+        resp = self.http.get(f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}", timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -84,6 +95,7 @@ class CCRClient:
         resp = self.http.get(
             f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}/events",
             params={"limit": limit},
+            timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json().get("data", [])
@@ -93,6 +105,7 @@ class CCRClient:
         resp = self.http.post(
             f"{API_BASE_URL}/v1/code/sessions/{self._cse(session_id)}/client/presence",
             json={"client_id": self.client_id},
+            timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json().get("refresh_after_seconds", 20)
@@ -111,39 +124,6 @@ class CCRClient:
             f"{API_BASE_URL}/v1/sessions/{sid}/events",
             json={"events": [event]},
             timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def post_control_response(
-        self,
-        session_id: str,
-        request_id: str,
-        behavior: str = "allow",
-        updated_input: dict | None = None,
-        message: str = "",
-    ) -> dict:
-        """Respond to a tool approval request."""
-        sid = self._sid(session_id)
-        response_inner: dict = {"behavior": behavior}
-        if behavior == "allow":
-            response_inner["toolUseID"] = request_id
-            if updated_input:
-                response_inner["updatedInput"] = updated_input
-        else:
-            response_inner["message"] = message or "Denied by user"
-
-        event = {
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": request_id,
-                "response": response_inner,
-            },
-        }
-        resp = self.http.post(
-            f"{API_BASE_URL}/v1/sessions/{sid}/events",
-            json={"events": [event]},
         )
         resp.raise_for_status()
         return resp.json()

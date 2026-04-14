@@ -57,8 +57,6 @@ Add to `claude_desktop_config.json`:
 | `get_session_events` | Get raw events, optionally filtered by type |
 | `send_message` | Send a message to a CC session (fire and forget) |
 | `send_and_wait` | Send a message and wait for the full response |
-| `approve_tool` | Approve a pending tool use request |
-| `deny_tool` | Deny a pending tool use request |
 
 ## How it works
 
@@ -68,7 +66,7 @@ Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear
 
 ## Limitations
 
-- **Tool approval** — `approve_tool` / `deny_tool` post events via HTTP, but the session runtime only picks up approvals via WebSocket (which is behind Cloudflare bot protection). You can see pending tool requests, but must approve them in the CC terminal or claude.ai/code web UI.
+- **Tool approval** — the session runtime only picks up approvals via WebSocket (behind Cloudflare bot protection). You can see pending tool requests via `send_and_wait`, but must approve them in the CC terminal or claude.ai/code web UI.
 - **Not real-time** — uses HTTP polling, not WebSocket streaming. ~1.5s latency.
 - **Undocumented API** — uses internal Anthropic endpoints that may change without notice.
 - **Local only** — reads credentials from the local machine. Can't be deployed as a remote service.

@@ -48,11 +48,14 @@ def load_oauth_token() -> dict | None:
 
     # 3. Plaintext fallback
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
-    if os.path.exists(cred_path):
-        with open(cred_path) as f:
-            data = json.load(f)
-        if isinstance(data, dict) and data.get("accessToken"):
-            return data
+    try:
+        if os.path.exists(cred_path):
+            with open(cred_path) as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data.get("accessToken"):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
 
     return None
 
