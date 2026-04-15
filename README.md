@@ -85,6 +85,14 @@ pre-commit install
 pytest
 ```
 
+## Disclaimer
+
+This project is an **experimental research tool** for personal and educational use. It interacts with undocumented, internal Anthropic APIs that are not part of any public or supported API surface. These endpoints may change, break, or be removed at any time without notice.
+
+This project is **not affiliated with, endorsed by, or supported by Anthropic**. Use it at your own risk. The authors assume no responsibility for any consequences of using this tool, including but not limited to account restrictions, data loss, or service disruption.
+
+By using this tool you acknowledge that you are responsible for compliance with Anthropic's [Terms of Service](https://www.anthropic.com/terms) and [Acceptable Use Policy](https://www.anthropic.com/aup).
+
 ## License
 
 MIT
