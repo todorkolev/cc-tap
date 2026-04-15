@@ -8,9 +8,15 @@
 
 MCP server that lets Claude Desktop see into and interact with Claude Code [Remote Control](https://code.claude.com/docs/en/remote-control) sessions.
 
+> **Example:** Ask Claude Desktop *"what's my Code session working on?"* and get a real answer.
+
+
+
 ## Why this exists
 
-Claude Code's Remote Control feature lets you view and interact with sessions from the web. But there's no way to access those sessions programmatically, from Claude Desktop, or from other Claude Code instances. cc-tap bridges that gap by exposing CC sessions as MCP tools.
+Claude Desktop and Claude Code are separate worlds. Both build up rich context on your project, but neither can see what the other is doing. A design idea on Desktop that should drive an implementation in Code, or an implementation detail in Code that the Desktop conversation needs; both require you to copy-paste between windows and re-explain context that already exists.
+
+Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) lets you drive a session from another device, but that's still you driving the same session. cc-tap is for the other axis: letting a different agent (Claude Desktop, or another Claude Code instance) read and interact with a running CC session through MCP.
 
 ## Who is this for
 
