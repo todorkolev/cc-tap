@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 
+import requests as req_lib
 from mcp.server.fastmcp import FastMCP
 
 from cc_tap.auth import load_oauth_token, load_org_uuid
@@ -22,21 +23,46 @@ _client: CCRClient | None = None
 _client_lock = threading.Lock()
 
 
+def _build_client() -> CCRClient:
+    token_data = load_oauth_token()
+    if not token_data:
+        msg = "No Claude Code credentials found. Run 'claude /login' first."
+        raise RuntimeError(msg)
+    access_token = token_data["accessToken"]
+    org_uuid = load_org_uuid(access_token)
+    if not org_uuid:
+        msg = "Could not determine organization UUID."
+        raise RuntimeError(msg)
+    return CCRClient(access_token=access_token, org_uuid=org_uuid)
+
+
 def _get_client() -> CCRClient:
     global _client
     with _client_lock:
         if _client is None:
-            token_data = load_oauth_token()
-            if not token_data:
-                msg = "No Claude Code credentials found. Run 'claude /login' first."
-                raise RuntimeError(msg)
-            access_token = token_data["accessToken"]
-            org_uuid = load_org_uuid(access_token)
-            if not org_uuid:
-                msg = "Could not determine organization UUID."
-                raise RuntimeError(msg)
-            _client = CCRClient(access_token=access_token, org_uuid=org_uuid)
+            _client = _build_client()
     return _client
+
+
+def _reset_client() -> None:
+    """Clear cached client so next call re-reads credentials."""
+    global _client
+    with _client_lock:
+        _client = None
+
+
+def _with_retry(fn):
+    """Call fn(client). On 401, refresh credentials and retry once."""
+    client = _get_client()
+    try:
+        return fn(client)
+    except req_lib.HTTPError as e:
+        if e.response is not None and e.response.status_code == 401:
+            logger.info("Got 401, refreshing credentials")
+            _reset_client()
+            client = _get_client()
+            return fn(client)
+        raise
 
 
 @mcp.tool()
@@ -46,8 +72,7 @@ def list_sessions(status_filter: str = "") -> str:
     Args:
         status_filter: Optional filter — 'active' (non-archived), 'running', 'idle', or '' for all.
     """
-    client = _get_client()
-    sessions = client.list_sessions()
+    sessions = _with_retry(lambda c: c.list_sessions())
 
     if status_filter == "active":
         sessions = [s for s in sessions if s.status != "archived"]
@@ -69,8 +94,7 @@ def get_session_info(session_id: str) -> str:
     Args:
         session_id: The session ID (with or without 'session_' prefix).
     """
-    client = _get_client()
-    s = client.get_session(session_id)
+    s = _with_retry(lambda c: c.get_session(session_id))
     return json.dumps(s, indent=2)
 
 
@@ -82,8 +106,7 @@ def read_session(session_id: str, last_n: int = 20) -> str:
         session_id: The session ID.
         last_n: Number of recent events to return (default 20).
     """
-    client = _get_client()
-    events = client.get_events(session_id)
+    events = _with_retry(lambda c: c.get_events(session_id))
 
     conv = [e for e in events if e["type"] in ("user", "assistant", "result")]
     recent = conv[-last_n:]
@@ -114,8 +137,7 @@ def get_session_events(session_id: str, event_types: str = "", last_n: int = 50)
         event_types: Comma-separated types to filter (e.g. 'user,assistant'). Empty for all.
         last_n: Number of recent events to return (default 50).
     """
-    client = _get_client()
-    events = client.get_events(session_id)
+    events = _with_retry(lambda c: c.get_events(session_id))
 
     if event_types:
         type_set = {t.strip() for t in event_types.split(",")}
@@ -133,8 +155,7 @@ def send_message(session_id: str, message: str) -> str:
         session_id: The session ID to send to.
         message: The message text to send.
     """
-    client = _get_client()
-    result = client.send_message(session_id, message)
+    result = _with_retry(lambda c: c.send_message(session_id, message))
     return json.dumps(result, indent=2)
 
 
@@ -151,12 +172,12 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
         timeout: Max seconds to wait for a response (default 120).
         poll_interval: Seconds between polls (default 1.5).
     """
-    client = _get_client()
-
-    events_before = client.get_events(session_id)
+    # Initial calls use retry; polling loop uses client directly
+    events_before = _with_retry(lambda c: c.get_events(session_id))
     baseline = len(events_before)
 
-    client.send_message(session_id, message)
+    _with_retry(lambda c: c.send_message(session_id, message))
+    client = _get_client()
     client.send_presence(session_id)
 
     deadline = time.time() + timeout
