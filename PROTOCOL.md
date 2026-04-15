@@ -241,7 +241,7 @@ Connects directly to the API, bypassing Cloudflare's browser checks.
 
 **Auth**: `Authorization: Bearer {oauth_access_token}`
 
-**Status**: Returns 403 with our CLI OAuth token for cloud-hosted internal sessions.
+**Status**: Returns 403 with the CLI OAuth token for cloud-hosted internal sessions.
 May only work for sessions created via the `/remote-control` command (local CLI
 exposed to web). Further investigation needed.
 
@@ -288,7 +288,7 @@ viable approach. Works with OAuth Bearer token against `api.anthropic.com`. Poll
 4. **Start heartbeat** — `POST /v1/code/sessions/cse_{id}/client/presence` every 20s
 5. **Send message** — `POST /v1/sessions/{id}/events` with user event
 6. **Poll for response** — `GET /v1/sessions/{id}/events?limit=1000` every 1-2s
-7. **Tool approval** — visible via polling but must be handled in the web UI or CC terminal (HTTP-posted control_responses don't reach the session runtime)
+7. **Tool approval** — see "Open Questions" below
 
 ## OAuth Token Location
 
@@ -303,4 +303,35 @@ Fallback (Linux/other):
 ```
 ~/.claude/.credentials.json
 ```
+
+## Open Questions
+
+Things suspected but not confirmed. Contributions welcome.
+
+- **Tool approval via HTTP POST** — the web UI sends `control_response` events via
+  `POST /v1/sessions/{id}/events` (confirmed in HAR capture), which is the same
+  endpoint cc-tap uses. Attempts from cc-tap didn't unblock the session, but the
+  web UI's do. The difference may be timing, session state, or an additional
+  mechanism not yet identified. Needs a controlled test with precise timing.
+
+- **WebSocket at api.anthropic.com** — returns 403 with the CLI OAuth token for
+  `internal_session` type sessions. May work for sessions created via
+  `/remote-control` (local CLI exposed to web). Needs verification with a
+  remote-control session.
+
+- **Session creation** — `POST /v1/sessions` likely exists but hasn't been captured
+  or tested. Would enable spinning up new CC sessions programmatically.
+
+- **Token exchange** — the web UI authenticates with `sessionKey` (`sk-ant-sid`),
+  the CLI with OAuth (`sk-ant-oat`). There may be an endpoint to exchange one for
+  the other, which would unlock WebSocket access from non-browser clients.
+
+- **Event pagination** — `GET /v1/sessions/{id}/events?limit=1000` fetches up to 1000
+  events. No cursor/pagination parameter has been discovered. Sessions with >1000
+  events may lose early history.
+
+- **MCP Channels** — CC has experimental channel support (`claude/channel` capability)
+  gated behind the `tengu_harbor` feature flag and a server-side allowlist. If opened
+  up, channels would enable real-time push notifications from the MCP server to the
+  CC session, replacing polling.
 
