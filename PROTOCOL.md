@@ -245,15 +245,38 @@ Connects directly to the API, bypassing Cloudflare's browser checks.
 May only work for sessions created via the `/remote-control` command (local CLI
 exposed to web). Further investigation needed.
 
-### 3. SSE — CLI Worker Inside CCR VM
+### 3. WebSocket — Bridge/Worker (session_ingress)
+
+```
+wss://api.anthropic.com/v1/session_ingress/ws/{session_id}
+```
+
+Used by the CLI bridge process (the actual session worker). This is where the worker
+receives control_responses and sends events. NOT the same as the `/subscribe` endpoint.
+
+**Auth**: `Authorization: Bearer {session_ingress_token}`
+
+The `session_ingress_token` is a short-lived, session-scoped credential obtained
+through the worker registration flow:
+1. CLI registers as worker via `POST /v1/code/sessions/{id}/worker/register`
+2. API returns a `WorkSecret` (base64url-encoded JSON) containing the token
+3. CLI uses that token for all `session_ingress` endpoints
+
+This token is NOT the user's OAuth token or the browser session key. External clients
+cannot obtain it without going through the worker registration flow.
+
+**URL construction** (from source):
+- Production: `wss://{host}/v1/session_ingress/ws/{sessionId}` (Envoy rewrites v1→v2)
+- Localhost: `ws://{host}/v2/session_ingress/ws/{sessionId}` (direct)
+
+### 4. SSE — CLI Worker (v2 path)
 
 ```
 GET /v2/session_ingress/session/{session_id}/events/stream
 ```
 
-Used by the CLI worker process running inside the Anthropic-managed VM.
-Auth via session-specific ingress token (`sk-ant-sid` cookie or JWT), NOT the user's
-OAuth token. This token is injected into the VM at creation time.
+Alternative to the WebSocket above, used by the v2 transport path (SSETransport).
+Same `session_ingress_token` auth.
 
 POST endpoint (for writing): same path without `/stream`:
 ```
@@ -276,9 +299,9 @@ viable approach. Works with OAuth Bearer token against `api.anthropic.com`. Poll
 
 | Prefix | Type | Source | Used For |
 |--------|------|--------|----------|
-| `sk-ant-oat` | OAuth access token | CLI Keychain / `~/.claude/.credentials.json` | HTTP API calls |
-| `sk-ant-sid` | Session key | Browser cookie (`sessionKey`) | WebSocket via claude.ai |
-| JWT | Session ingress | Injected into CCR VM | SSE/POST inside VM |
+| `sk-ant-oat` | OAuth access token | CLI Keychain / `~/.claude/.credentials.json` | HTTP API calls, worker registration |
+| `sk-ant-sid` | Session key | Browser cookie (`sessionKey`) | WebSocket subscribe via claude.ai |
+| (opaque) | Session ingress token | `WorkSecret` from worker registration | `session_ingress` WebSocket + SSE |
 
 ## Complete Client Flow (Polling)
 
@@ -334,14 +357,19 @@ POST but not for the WebSocket upgrade handshake.
 
 Things suspected but not confirmed. Contributions welcome.
 
-- **WebSocket at api.anthropic.com** — returns 403 with the CLI OAuth token for
-  `internal_session` type sessions. May work for sessions created via
-  `/remote-control` (local CLI exposed to web). Needs verification with a
-  remote-control session.
+- **WebSocket at api.anthropic.com** — three endpoints tested, all return 403:
+  - `/v1/sessions/ws/{id}/subscribe` with OAuth token (403)
+  - `/v1/session_ingress/ws/{id}` with OAuth token (403 — needs session_ingress_token)
+  - `/v1/sessions/ws/{id}/subscribe` with `sk-ant-sid` cookie (403) and Bearer (401)
 
-- **Cloudflare bypass for WebSocket** — `curl_cffi` with Chrome TLS impersonation
-  passes Cloudflare for HTTP POST to `claude.ai` but fails for WebSocket upgrade.
-  A headless browser (Playwright) would work but adds significant complexity.
+  The `/subscribe` endpoint may require a specific token scope or session type.
+  The `/session_ingress` endpoint requires a worker-registration-issued token that
+  external clients cannot obtain.
+
+- **Cloudflare bypass** — `curl_cffi` with Chrome TLS impersonation passes
+  Cloudflare for HTTP POST to `claude.ai` (200) but fails for WebSocket upgrade
+  (403). Headless Playwright also blocked. Only a real browser with existing
+  session passes Cloudflare for WebSocket.
 
 - **Session creation** — `POST /v1/sessions` likely exists but hasn't been captured
   or tested. Would enable spinning up new CC sessions programmatically.
