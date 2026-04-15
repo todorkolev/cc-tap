@@ -61,7 +61,12 @@ def load_oauth_token() -> dict | None:
 
 
 def load_org_uuid(access_token: str = "") -> str | None:
-    """Load organization UUID from API or local config."""
+    """Load organization UUID from env var, API, or local config."""
+    # Check env var first
+    env_org = os.environ.get("CCR_ORG_UUID")
+    if env_org:
+        return env_org
+
     if access_token:
         try:
             resp = requests.get(
