@@ -6,11 +6,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-MCP server that lets Claude Desktop see into and interact with Claude Code sessions.
+MCP server that lets Claude Desktop see into and interact with Claude Code [Remote Control](https://code.claude.com/docs/en/remote-control) sessions.
 
 ## Why this exists
 
-Claude Code and Claude Desktop are separate worlds. You can't see what a CC session is doing from Desktop, and you can't have two CC instances coordinate. cc-tap bridges that gap by exposing CC sessions as MCP tools.
+Claude Code's Remote Control feature lets you view and interact with sessions from the web. But there's no way to access those sessions programmatically, from Claude Desktop, or from other Claude Code instances. cc-tap bridges that gap by exposing CC sessions as MCP tools.
 
 ## Who is this for
 
@@ -24,7 +24,7 @@ Claude Code and Claude Desktop are separate worlds. You can't see what a CC sess
 pip install cc-tap
 ```
 
-Requires an active Claude Code login (`claude /login`).
+Requires an active Claude Code login (`claude /login`) and [Remote Control](https://code.claude.com/docs/en/remote-control) enabled.
 
 ### Claude Code
 
@@ -60,7 +60,7 @@ Add to `claude_desktop_config.json`:
 
 ## How it works
 
-cc-tap reads your Claude Code OAuth credentials (from macOS Keychain or `~/.claude/.credentials.json`) and talks to the same API that the claude.ai/code web UI uses. No additional authentication needed.
+cc-tap reads your Claude Code OAuth credentials (from macOS Keychain or `~/.claude/.credentials.json`) and talks to the same API that Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) web UI uses. No additional authentication needed.
 
 Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear in the target CC session as if typed by the user.
 
