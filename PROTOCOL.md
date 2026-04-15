@@ -304,20 +304,44 @@ Fallback (Linux/other):
 ~/.claude/.credentials.json
 ```
 
+## Tool Approval: How It Actually Works
+
+The web UI uses **two channels** simultaneously:
+- **HTTP POST** (`/v1/sessions/{id}/events`) — for sending user messages only
+- **WebSocket** (`wss://claude.ai/v1/sessions/ws/{id}/subscribe`) — for receiving
+  events AND sending control_responses (tool approvals)
+
+Control_responses sent via HTTP POST are stored in event history but **never broadcast
+to WebSocket subscribers**. The session worker only receives control_responses through
+its WebSocket connection. This is why HTTP-posted approvals don't unblock the session.
+
+```
+Web UI (browser)
+  ├── HTTP POST /events        → user messages only (stored + consumed)
+  └── WebSocket /ws/subscribe  → control_responses (broadcast to session worker)
+                               ← assistant events, control_requests (received)
+
+cc-tap (no WebSocket)
+  └── HTTP POST /events        → user messages (stored + consumed)
+                               → control_responses (stored but NOT consumed)
+```
+
+The WebSocket at `claude.ai` is behind Cloudflare bot protection. TLS fingerprint
+impersonation (`curl_cffi` with Chrome impersonation) bypasses Cloudflare for HTTP
+POST but not for the WebSocket upgrade handshake.
+
 ## Open Questions
 
 Things suspected but not confirmed. Contributions welcome.
-
-- **Tool approval via HTTP POST** — the web UI sends `control_response` events via
-  `POST /v1/sessions/{id}/events` (confirmed in HAR capture), which is the same
-  endpoint cc-tap uses. Attempts from cc-tap didn't unblock the session, but the
-  web UI's do. The difference may be timing, session state, or an additional
-  mechanism not yet identified. Needs a controlled test with precise timing.
 
 - **WebSocket at api.anthropic.com** — returns 403 with the CLI OAuth token for
   `internal_session` type sessions. May work for sessions created via
   `/remote-control` (local CLI exposed to web). Needs verification with a
   remote-control session.
+
+- **Cloudflare bypass for WebSocket** — `curl_cffi` with Chrome TLS impersonation
+  passes Cloudflare for HTTP POST to `claude.ai` but fails for WebSocket upgrade.
+  A headless browser (Playwright) would work but adds significant complexity.
 
 - **Session creation** — `POST /v1/sessions` likely exists but hasn't been captured
   or tested. Would enable spinning up new CC sessions programmatically.
@@ -325,6 +349,11 @@ Things suspected but not confirmed. Contributions welcome.
 - **Token exchange** — the web UI authenticates with `sessionKey` (`sk-ant-sid`),
   the CLI with OAuth (`sk-ant-oat`). There may be an endpoint to exchange one for
   the other, which would unlock WebSocket access from non-browser clients.
+
+- **Session ID mapping** — local CC sessions have a UUID (from `/status`) that
+  doesn't map to the API's `session_01...` ID. The API ID is server-assigned when
+  remote control connects. No mapping endpoint discovered. Sessions can only be
+  identified by title (which isn't unique).
 
 - **Event pagination** — `GET /v1/sessions/{id}/events?limit=1000` fetches up to 1000
   events. No cursor/pagination parameter has been discovered. Sessions with >1000
