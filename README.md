@@ -6,10 +6,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-MCP server that lets Claude Desktop see into and interact with Claude Code [Remote Control](https://code.claude.com/docs/en/remote-control) sessions.
+Experimental MCP server that lets Claude Desktop see into and interact with Claude Code [Remote Control](https://code.claude.com/docs/en/remote-control) sessions.
 
 > **Example:** Ask Claude Desktop *"what's my Code session working on?"* and get a real answer.
 
+![cc-tap demo](https://raw.githubusercontent.com/es617/cc-tap/main/docs/demo.gif)
 
 
 ## Why this exists
@@ -79,7 +80,7 @@ Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear
 
 ## Protocol
 
-See [PROTOCOL.md](PROTOCOL.md) for the reverse-engineered Claude Code Remote session API documentation.
+See [PROTOCOL.md](https://github.com/es617/cc-tap/blob/main/PROTOCOL.md) for the reverse-engineered Claude Code Remote session API documentation.
 
 ## Development
 
@@ -101,4 +102,4 @@ By using this tool you acknowledge that you are responsible for compliance with 
 
 ## License
 
-MIT
+[MIT](https://github.com/es617/cc-tap/blob/main/LICENSE)
