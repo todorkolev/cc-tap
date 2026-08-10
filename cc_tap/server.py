@@ -108,8 +108,8 @@ def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
     Args:
         session_id: The session ID (with or without 'session_' prefix).
         include_mcp_config: Include the session's full MCP connector config.
-            Off by default — it is a large repeated blob (typically ~70% of the
-            payload) and is almost never what you want.
+            Off by default — on a session with connectors it is a large repeated
+            blob, often most of the payload, and is almost never what you want.
     """
     s = _with_retry(lambda c: c.get_session(session_id))
     if not include_mcp_config:

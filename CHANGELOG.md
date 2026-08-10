@@ -20,8 +20,10 @@
 - `list_sessions` now shows `repo`, `status_bucket` and `post_turn_summary.status_detail`
   inline. These already come back from `GET /v1/sessions`, so answering "what is
   blocked on repo X?" no longer costs one `get_session_info` per session.
-- `get_session_info` omits `session_context.mcp_config` unless asked for it —
-  measured at ~70% of the payload (~2400 tokens down to ~440).
+- `get_session_info` omits `session_context.mcp_config` unless asked for it.
+  Measured across 12 live sessions: 4.2x smaller at the median, up to 5.9x on
+  connector-heavy sessions (~2700 tokens down to ~460). Sessions started without
+  MCP connectors have little to strip and are barely affected.
 - Pinned `mcp>=1.29,<2`: mcp 2.0 removed `mcp.server.fastmcp` (renamed to
   `mcp.server.mcpserver`), so the previous `mcp>=1.0` no longer installed.
 
