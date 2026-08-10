@@ -1,0 +1,57 @@
+# cc-tap over HTTPS, for clients that cannot see a local stdio server
+# (Claude voice mode, the mobile app, scheduled tasks).
+#
+# Read Part 3 of the README before using this: the container must be able to read
+# the *live* Claude Code credentials file, because the token expires and is
+# refreshed by the running Claude Code CLI, not by cc-tap.
+#
+# Two things make that work:
+#   * the whole ~/.claude DIRECTORY is mounted, not the .credentials.json file.
+#     A single-file bind mount pins an inode, so a refresh that replaces the file
+#     via atomic rename would leave the container reading the stale original.
+#   * APP_UID matches the host user that owns ~/.claude (it is mode 0600).
+#
+# If Claude Code runs directly on this host rather than in another container,
+# running cc-tap as a systemd user service is simpler than any of this.
+
+services:
+  cc-tap:
+    build:
+      context: .
+      args:
+        # Must match `id -u` of the user whose ~/.claude is mounted below.
+        APP_UID: "${APP_UID:-1000}"
+        APP_GID: "${APP_GID:-1000}"
+    image: cc-tap:local
+    restart: unless-stopped
+
+    environment:
+      CC_TAP_TRANSPORT: http
+      CC_TAP_HOST: 0.0.0.0
+      CC_TAP_PORT: "8787"
+      # The public HTTPS URL clients reach — the OAuth issuer. Required.
+      CC_TAP_PUBLIC_URL: "${CC_TAP_PUBLIC_URL:?set CC_TAP_PUBLIC_URL, e.g. https://cc-tap.example.com}"
+      # openssl rand -hex 32. Keep it out of git; put it in .env.
+      MCP_SECRET: "${MCP_SECRET:?set MCP_SECRET (openssl rand -hex 32)}"
+      CC_TAP_TOKEN_STORE: /data/oauth-tokens.json
+      CC_TAP_LOG_LEVEL: "${CC_TAP_LOG_LEVEL:-INFO}"
+
+    volumes:
+      # Live Claude Code credentials, read-only. Directory, not file — see above.
+      - "${CLAUDE_HOME:-${HOME}/.claude}:/home/app/.claude:ro"
+      # Issued OAuth tokens, so connectors survive a restart.
+      - cc-tap-data:/data
+
+    ports:
+      # Bound to loopback: terminate TLS in front of this. Exposing 8787 directly
+      # would serve the OAuth flow over plaintext HTTP.
+      - "127.0.0.1:8787:8787"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  cc-tap-data:

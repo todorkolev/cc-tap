@@ -58,12 +58,65 @@ Add to `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `list_sessions` | List all CC sessions (optionally filter by status) |
-| `get_session_info` | Get details about a specific session |
+| `list_sessions` | List all CC sessions, with repo and status inline (filter by `status_filter`, `repo`) |
+| `get_session_info` | Get details about a specific session (`include_mcp_config` for the full connector blob) |
 | `read_session` | Read recent conversation from a session |
 | `get_session_events` | Get raw events, optionally filtered by type |
 | `send_message` | Send a message to a CC session (fire and forget) |
 | `send_and_wait` | Send a message and wait for the full response |
+
+## Remote access over HTTPS
+
+By default cc-tap speaks **stdio**, so only a client on the same machine can reach it. To use it from a client that runs in Anthropic's cloud — voice mode, the mobile app, scheduled tasks — it needs a public HTTPS endpoint speaking MCP streamable HTTP:
+
+```bash
+export MCP_SECRET=$(openssl rand -hex 32)
+export CC_TAP_PUBLIC_URL=https://cc-tap.example.com
+cc_tap --transport http --host 0.0.0.0 --port 8787
+```
+
+Put TLS in front of it (any reverse proxy). Then in **claude.ai → Settings → Connectors → Add custom connector**, use `https://cc-tap.example.com/mcp`.
+
+| Path | Auth | Purpose |
+|------|------|---------|
+| `/mcp` | required | MCP streamable HTTP endpoint |
+| `/health` | open | liveness probe |
+| `/consent` | — | approval form; asks for `MCP_SECRET` |
+| `/authorize`, `/token`, `/register` | — | OAuth 2.1 endpoints |
+| `/.well-known/oauth-authorization-server` | open | AS metadata (RFC 8414) |
+| `/.well-known/oauth-protected-resource/mcp` | open | RS metadata (RFC 9728) |
+
+### Authentication
+
+The connector form takes only a name, a URL, and optional OAuth client credentials — there is no field for a bearer token or custom header. So access is gated by OAuth 2.1 (authorization code + PKCE), and both connection styles work:
+
+- **Leave Client ID / Client Secret blank** — Claude registers itself via Dynamic Client Registration.
+- **Paste them** — a fixed ID and secret derived from `MCP_SECRET`, printed at startup.
+
+Either way the browser lands on a consent page that requires `MCP_SECRET` before a code is issued. **That consent step is the real access gate.** With dynamic registration enabled, anyone who can reach the URL can register a client, so approving automatically would leave the endpoint open to whoever knows the address. `CC_TAP_OAUTH_AUTO_APPROVE=1` disables the check — don't, unless the endpoint is already private.
+
+Redirect URIs are restricted to `claude.ai` and `claude.com` over HTTPS. Issued tokens are persisted (`CC_TAP_TOKEN_STORE`, mode 0600) so connections survive a restart.
+
+See [`.env.example`](.env.example) for every variable.
+
+### Deploying
+
+The important constraint is credentials, not transport. cc-tap resolves the Anthropic token from `CLAUDE_CODE_OAUTH_TOKEN`, then the macOS Keychain, then `~/.claude/.credentials.json` — and **that token expires and is refreshed by the running Claude Code CLI, not by cc-tap**. A token pinned into an env var will expire and stay expired; cc-tap re-reads the credentials file when the API returns 401, so it must see the *live* file.
+
+That means running cc-tap **as the same user, on the same machine, as the Claude Code that keeps those credentials fresh**. A systemd user service is the simplest way:
+
+```ini
+# ~/.config/systemd/user/cc-tap.service
+[Service]
+Environment=CC_TAP_TRANSPORT=http
+Environment=CC_TAP_HOST=0.0.0.0
+Environment=CC_TAP_PUBLIC_URL=https://cc-tap.example.com
+EnvironmentFile=%h/.config/cc-tap.env
+ExecStart=%h/.local/bin/cc_tap
+Restart=on-failure
+```
+
+[`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml) are provided for container deployments. Mount the whole `~/.claude` **directory** read-only rather than the `.credentials.json` file — a single-file bind mount pins an inode, so a refresh that replaces the file would leave the container reading a stale copy — and build with `APP_UID` matching the user that owns it (the file is mode 0600).
 
 ## How it works
 
@@ -76,7 +129,7 @@ Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear
 - **Tool approval** — the session runtime only picks up approvals via WebSocket (behind Cloudflare bot protection). You can see pending tool requests via `send_and_wait`, but must approve them in the CC terminal or claude.ai/code web UI.
 - **Not real-time** — uses HTTP polling, not WebSocket streaming. ~1.5s latency.
 - **Undocumented API** — uses internal Anthropic endpoints that may change without notice.
-- **Local only** — reads credentials from the local machine. Can't be deployed as a remote service.
+- **Credentials are local** — cc-tap must run as the user whose Claude Code keeps `~/.claude/.credentials.json` fresh. It can be [reached remotely over HTTPS](#remote-access-over-https), but it cannot be deployed somewhere that user's live credentials are not readable.
 
 ## Protocol
 

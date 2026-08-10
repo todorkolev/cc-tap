@@ -9,3 +9,8 @@ build/
 .pytest_cache/
 .coverage
 cc_tap/_version.py
+
+# Local HTTP-transport config — holds MCP_SECRET
+.env
+# Persisted OAuth tokens, if the store is pointed at the repo
+oauth-tokens.json

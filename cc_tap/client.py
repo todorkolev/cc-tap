@@ -22,6 +22,11 @@ class CCRSession:
     connection_status: str
     created_at: str
     updated_at: str
+    #: Enriched fields the list endpoint already returns, so callers do not have
+    #: to fetch each session individually just to learn its repo or progress.
+    repo: str = ""
+    status_bucket: str = ""
+    status_detail: str = ""
 
     @property
     def session_id(self) -> str:
@@ -80,6 +85,9 @@ class CCRClient:
                 connection_status=s.get("connection_status", "unknown"),
                 created_at=s.get("created_at", ""),
                 updated_at=s.get("updated_at", ""),
+                repo=extract_repo(s),
+                status_bucket=s.get("status_bucket") or "",
+                status_detail=(s.get("post_turn_summary") or {}).get("status_detail") or "",
             )
             for s in resp.json().get("data", [])
         ]
@@ -127,6 +135,23 @@ class CCRClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+def extract_repo(session: dict) -> str:
+    """Pull the repo slug out of a raw session dict.
+
+    Lives at ``session_context.outcomes[].git_info.repo``. Outcomes is a list
+    and some sessions have none (a session started outside a repo), so take the
+    first entry that actually names one.
+    """
+    outcomes = (session.get("session_context") or {}).get("outcomes") or []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            continue
+        repo = (outcome.get("git_info") or {}).get("repo")
+        if repo:
+            return str(repo)
+    return ""
 
 
 def extract_text(content) -> str:

@@ -1,0 +1,19 @@
+# NOTE: .git is deliberately NOT ignored. Versioning is hatch-vcs, which derives
+# the version from git tags, so the builder stage needs the repository metadata.
+# Build with --build-arg CC_TAP_VERSION=x.y.z if you must build without it.
+
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Never bake secrets or local state into an image.
+.env
+*.har
+docs/

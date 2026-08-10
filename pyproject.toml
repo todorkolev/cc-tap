@@ -21,8 +21,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "mcp>=1.0",
-    "requests>=2.31",
+    # mcp 2.0 removed `mcp.server.fastmcp` (renamed to `mcp.server.mcpserver`),
+    # so the <2 bound is load-bearing, not caution.
+    "mcp>=1.29,<2",
+    "requests>=2.32,<3",
+    # Pulled in by mcp, but imported directly by the HTTP transport.
+    "starlette>=1.6,<2",
+    "uvicorn>=0.35,<1",
 ]
 
 [project.scripts]

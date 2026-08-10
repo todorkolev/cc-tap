@@ -3,6 +3,8 @@
 import argparse
 import json
 import logging
+import os
+import sys
 import threading
 import time
 
@@ -14,10 +16,7 @@ from cc_tap.client import CCRClient, extract_text
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP(
-    "cc-tap",
-    instructions="Bridge to Claude Code sessions — list, read, and interact with active sessions",
-)
+SERVER_INSTRUCTIONS = "Bridge to Claude Code sessions — list, read, and interact with active sessions"
 
 _client: CCRClient | None = None
 _client_lock = threading.Lock()
@@ -65,40 +64,64 @@ def _with_retry(fn):
         raise
 
 
-@mcp.tool()
-def list_sessions(status_filter: str = "") -> str:
-    """List all Claude Code sessions.
+def list_sessions(status_filter: str = "", repo: str = "") -> str:
+    """List all Claude Code sessions, with repo and status shown inline.
 
     Args:
         status_filter: Optional filter — 'active' (non-archived), 'running', 'idle', or '' for all.
+        repo: Optional repo filter, matched case-insensitively as a substring
+            (e.g. 'sigma' matches 'midt-bg/sigma'). Empty for all repos.
     """
     sessions = _with_retry(lambda c: c.list_sessions())
+    total = len(sessions)
 
     if status_filter == "active":
         sessions = [s for s in sessions if s.status != "archived"]
     elif status_filter:
         sessions = [s for s in sessions if s.status == status_filter]
 
-    lines = [f"Found {len(sessions)} session(s):\n"]
-    for s in sessions[:30]:
-        lines.append(f"- [{s.status}] {s.title}  (id: {s.id})")
-    if len(sessions) > 30:
-        lines.append(f"  ... and {len(sessions) - 30} more")
+    if repo:
+        needle = repo.lower()
+        sessions = [s for s in sessions if needle in s.repo.lower()]
+
+    shown = sessions[:30]
+    header = f"Found {len(sessions)} session(s)"
+    if len(sessions) != total:
+        header += f" (of {total} total)"
+    lines = [header + ":\n"]
+
+    for s in shown:
+        bucket = s.status_bucket or s.status
+        where = s.repo or "no repo"
+        lines.append(f"- [{bucket}] {where} — {s.title}")
+        if s.status_detail:
+            lines.append(f"    {s.status_detail}")
+        lines.append(f"    id: {s.id}")
+    if len(sessions) > len(shown):
+        lines.append(f"\n... and {len(sessions) - len(shown)} more")
     return "\n".join(lines)
 
 
-@mcp.tool()
-def get_session_info(session_id: str) -> str:
+def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
     """Get details about a specific Claude Code session.
 
     Args:
         session_id: The session ID (with or without 'session_' prefix).
+        include_mcp_config: Include the session's full MCP connector config.
+            Off by default — it is a large repeated blob (typically ~70% of the
+            payload) and is almost never what you want.
     """
     s = _with_retry(lambda c: c.get_session(session_id))
+    if not include_mcp_config:
+        ctx = s.get("session_context")
+        if isinstance(ctx, dict) and "mcp_config" in ctx:
+            s = dict(s)
+            trimmed = {k: v for k, v in ctx.items() if k != "mcp_config"}
+            trimmed["mcp_config"] = "<omitted — pass include_mcp_config=true to see it>"
+            s["session_context"] = trimmed
     return json.dumps(s, indent=2)
 
 
-@mcp.tool()
 def read_session(session_id: str, last_n: int = 20) -> str:
     """Read recent conversation from a Claude Code session.
 
@@ -128,7 +151,6 @@ def read_session(session_id: str, last_n: int = 20) -> str:
     return "\n\n".join(lines)
 
 
-@mcp.tool()
 def get_session_events(session_id: str, event_types: str = "", last_n: int = 50) -> str:
     """Get raw events from a session, optionally filtered by type.
 
@@ -147,7 +169,6 @@ def get_session_events(session_id: str, event_types: str = "", last_n: int = 50)
     return json.dumps(recent, indent=2, default=str)
 
 
-@mcp.tool()
 def send_message(session_id: str, message: str) -> str:
     """Send a message to a Claude Code session.
 
@@ -159,7 +180,6 @@ def send_message(session_id: str, message: str) -> str:
     return json.dumps(result, indent=2)
 
 
-@mcp.tool()
 def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interval: float = 1.5) -> str:
     """Send a message to a Claude Code session and wait for the full response.
 
@@ -237,17 +257,83 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
     )
 
 
+TOOLS = (
+    list_sessions,
+    get_session_info,
+    read_session,
+    get_session_events,
+    send_message,
+    send_and_wait,
+)
+
+
+def build_mcp(**kwargs) -> FastMCP:
+    """Create a FastMCP instance with all cc-tap tools registered.
+
+    Auth has to be supplied at construction time (FastMCP validates it there
+    and derives its token verifier from the provider), so the HTTP path builds
+    its own instance rather than mutating a shared one.
+    """
+    server = FastMCP("cc-tap", instructions=SERVER_INSTRUCTIONS, **kwargs)
+    for fn in TOOLS:
+        server.tool()(fn)
+    return server
+
+
+#: Module-level instance used by the stdio transport (and by `mcp dev`).
+mcp = build_mcp()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
     parser = argparse.ArgumentParser(description="cc-tap: MCP server for Claude Code sessions")
     parser.add_argument(
         "--transport",
-        choices=["stdio"],
-        default="stdio",
-        help="MCP transport",
+        choices=["stdio", "http"],
+        default=os.environ.get("CC_TAP_TRANSPORT", "stdio"),
+        help="MCP transport (default: stdio; env: CC_TAP_TRANSPORT)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("CC_TAP_HOST", "127.0.0.1"),
+        help="Bind address for --transport http (default: 127.0.0.1; env: CC_TAP_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("CC_TAP_PORT", "8787")),
+        help="Bind port for --transport http (default: 8787; env: CC_TAP_PORT)",
+    )
+    parser.add_argument(
+        "--public-url",
+        default=os.environ.get("CC_TAP_PUBLIC_URL"),
+        help=(
+            "Public HTTPS base URL clients reach this server on, used as the OAuth "
+            "issuer and resource identifier (env: CC_TAP_PUBLIC_URL)"
+        ),
     )
     args = parser.parse_args()
 
-    mcp.run(transport=args.transport)
+    logging.basicConfig(
+        level=os.environ.get("CC_TAP_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+
+    # Imported here so the stdio path keeps working without the HTTP extras.
+    from cc_tap.http_app import run_http
+
+    run_http(host=args.host, port=args.port, public_url=args.public_url)
 
 
 if __name__ == "__main__":
