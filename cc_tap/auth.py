@@ -20,6 +20,25 @@ import requests
 API_BASE_URL = "https://api.anthropic.com"
 
 
+def _extract_credentials(data) -> dict | None:
+    """Normalise a credential payload to the dict holding ``accessToken``.
+
+    The CLI stores credentials in two shapes, and both turn up in both the
+    Keychain and the plaintext file depending on version and platform:
+
+      {"claudeAiOauth": {"accessToken": ...}, "organizationUuid": ...}   nested
+      {"accessToken": ...}                                              flat
+    """
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("claudeAiOauth")
+    if isinstance(nested, dict) and nested.get("accessToken"):
+        return nested
+    if data.get("accessToken"):
+        return data
+    return None
+
+
 def load_oauth_token() -> dict | None:
     """Load OAuth tokens from Claude CLI's credential store."""
     # 1. Environment variable
@@ -37,23 +56,20 @@ def load_oauth_token() -> dict | None:
                 timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                data = json.loads(result.stdout.strip())
-                if isinstance(data, dict):
-                    if data.get("claudeAiOauth"):
-                        return data["claudeAiOauth"]
-                    if data.get("accessToken"):
-                        return data
+                creds = _extract_credentials(json.loads(result.stdout.strip()))
+                if creds:
+                    return creds
         except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
             pass
 
-    # 3. Plaintext fallback
+    # 3. Plaintext fallback. Read fresh every call and never cached here: the
+    # token expires and is rewritten by the running Claude Code CLI, so callers
+    # re-invoke this on 401 to pick up the refreshed value.
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
     try:
         if os.path.exists(cred_path):
             with open(cred_path) as f:
-                data = json.load(f)
-            if isinstance(data, dict) and data.get("accessToken"):
-                return data
+                return _extract_credentials(json.load(f))
     except (OSError, json.JSONDecodeError):
         pass
 
