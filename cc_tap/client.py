@@ -1,13 +1,24 @@
 """HTTP client for the Claude Code Remote session API."""
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 API_BASE_URL = "https://api.anthropic.com"
 CCR_BETA = "ccr-byoc-2025-07-29"
+
+#: Server-side maximum for the events endpoint's `limit`. Asking for more is a
+#: 400, so longer histories have to be paged.
+MAX_EVENTS_PER_PAGE = 1000
+
+#: Safety bound on pages walked per call — 50k events, far beyond any real
+#: session, so a broken cursor cannot spin forever.
+MAX_EVENT_PAGES = 50
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
@@ -98,15 +109,71 @@ class CCRClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_events(self, session_id: str, limit: int = 1000) -> list[dict]:
-        """Get conversation history for a session."""
-        resp = self.http.get(
-            f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}/events",
-            params={"limit": limit},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data", [])
+    def get_events(
+        self,
+        session_id: str,
+        limit: int = MAX_EVENTS_PER_PAGE,
+        after_id: str | None = None,
+        max_pages: int = MAX_EVENT_PAGES,
+    ) -> list[dict]:
+        """Get conversation history for a session, following pagination.
+
+        The API caps ``limit`` at 1000 per request (anything higher is a 400)
+        and returns events oldest-first alongside ``has_more`` / ``last_id``.
+        A single request therefore returns the *oldest* 1000 events, so on a
+        session longer than that every newer turn is invisible — and because
+        callers take the tail of what they get, the session silently appears
+        frozen at whenever event 1000 happened.
+
+        Paging uses ``last_id`` as an ``after_id`` cursor rather than
+        timestamps: events at a page boundary can share a timestamp, so
+        timestamp ordering is not strictly monotonic across the full history.
+
+        Args:
+            session_id: The session ID.
+            limit: Page size, clamped to the server maximum of 1000.
+            after_id: Return only events following this event uuid. Lets
+                pollers fetch just what is new instead of the whole history.
+            max_pages: Safety bound on how many pages to walk.
+        """
+        sid = self._sid(session_id)
+        page_size = max(1, min(limit, MAX_EVENTS_PER_PAGE))
+        events: list[dict] = []
+        cursor = after_id
+
+        for page in range(max_pages):
+            params: dict[str, object] = {"limit": page_size}
+            if cursor:
+                params["after_id"] = cursor
+            resp = self.http.get(
+                f"{API_BASE_URL}/v1/sessions/{sid}/events",
+                params=params,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            batch = body.get("data", [])
+            if not batch:
+                break
+            events.extend(batch)
+            if not body.get("has_more"):
+                break
+
+            next_cursor = body.get("last_id") or batch[-1].get("uuid")
+            if not next_cursor or next_cursor == cursor:
+                # Cursor is not advancing; stop rather than loop forever.
+                logger.warning("Event cursor stalled for %s after %d events", sid, len(events))
+                break
+            cursor = next_cursor
+            if page == max_pages - 1:
+                logger.warning(
+                    "Stopped paging %s at %d events (max_pages=%d); newest events omitted",
+                    sid,
+                    len(events),
+                    max_pages,
+                )
+
+        return events
 
     def send_presence(self, session_id: str) -> int:
         """Send client presence heartbeat. Returns seconds until next heartbeat."""

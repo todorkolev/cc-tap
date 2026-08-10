@@ -194,7 +194,7 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
     """
     # Initial calls use retry; polling loop uses client directly
     events_before = _with_retry(lambda c: c.get_events(session_id))
-    baseline = len(events_before)
+    cursor = events_before[-1].get("uuid") if events_before else None
 
     _with_retry(lambda c: c.send_message(session_id, message))
     client = _get_client()
@@ -205,13 +205,15 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
 
     while time.time() < deadline:
         time.sleep(poll_interval)
-        events = client.get_events(session_id)
+        # Ask only for what is new. Re-reading the full history every tick would
+        # mean several thousand events per poll on a long-running session, since
+        # get_events now pages through all of it.
+        new_events = client.get_events(session_id, after_id=cursor)
 
-        if len(events) <= baseline:
+        if not new_events:
             continue
 
-        new_events = events[baseline:]
-        baseline = len(events)
+        cursor = new_events[-1].get("uuid") or cursor
 
         tool_requests: list[dict] = []
 

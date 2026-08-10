@@ -16,6 +16,15 @@
 - `repo` filter on `list_sessions`; `include_mcp_config` on `get_session_info`.
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, and a pinned `requirements.lock`.
 
+### Fixed
+- `get_events` now pages through the full event history. The API caps `limit`
+  at 1000 per request and returns events oldest-first, so a single call returned
+  the *oldest* 1000 — on any longer session every newer turn was invisible and
+  `read_session` appeared frozen at whenever event 1000 happened. Observed on a
+  4913-event session that read as stuck 28 hours in the past.
+- `send_and_wait` polls with an `after_id` cursor instead of re-reading the whole
+  history each tick, which paging would otherwise have made very expensive.
+
 ### Changed
 - `list_sessions` now shows `repo`, `status_bucket` and `post_turn_summary.status_detail`
   inline. These already come back from `GET /v1/sessions`, so answering "what is
