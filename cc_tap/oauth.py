@@ -56,6 +56,10 @@ PENDING_TTL = 600  # how long a consent page stays valid
 
 CONSENT_PATH = "/consent"
 
+#: client_id reported for requests authenticated by the pre-shared bearer token
+#: rather than by an OAuth-issued one. Distinct so logs can tell them apart.
+STATIC_CLIENT_ID = "cc-tap-static-bearer"
+
 
 def derive_client_credentials(secret: str) -> tuple[str, str]:
     """Derive a stable client ID and secret from ``MCP_SECRET``.
@@ -162,13 +166,23 @@ class CCTapOAuthProvider(OAuthAuthorizationServerProvider):
         store: FileTokenStore,
         auto_approve: bool = False,
         token_ttl: int = DEFAULT_TOKEN_TTL,
+        static_token: str | None = None,
     ):
         self.secret = secret
         self.issuer_url = str(issuer_url).rstrip("/")
         self.store = store
         self.auto_approve = auto_approve
         self.token_ttl = token_ttl
+        self.static_token = static_token or None
         self.client_id, self.client_secret = derive_client_credentials(secret)
+
+        # Reusing the consent secret as a bearer token would widen its exposure
+        # badly: MCP_SECRET is typed once into a form, while a bearer token is
+        # sent on every request and sits in a client-side env var. Whoever
+        # captured it could then also approve OAuth authorizations.
+        if self.static_token and hmac.compare_digest(self.static_token, secret):
+            msg = "CC_TAP_BEARER_TOKEN must not equal MCP_SECRET — use two independent values."
+            raise ValueError(msg)
 
     # --- clients ---------------------------------------------------------
 
@@ -376,6 +390,15 @@ class CCTapOAuthProvider(OAuthAuthorizationServerProvider):
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
+        # A pre-shared bearer token, for clients whose config form offers a
+        # bearer field but does not run the OAuth flow. Checked first and in
+        # constant time. It never expires, so treat it like a password: it is
+        # opt-in via CC_TAP_BEARER_TOKEN and unset by default.
+        if self.static_token and hmac.compare_digest(token, self.static_token):
+            return AccessToken(
+                token=token, client_id=STATIC_CLIENT_ID, scopes=[], expires_at=None, resource=None
+            )
+
         raw = self.store.get("access_tokens", token)
         if not raw:
             return None

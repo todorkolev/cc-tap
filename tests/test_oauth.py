@@ -269,3 +269,56 @@ class TestTokenExchange:
     async def test_store_holds_no_plaintext_secret(self, provider):
         await self._code_for(provider)
         assert SECRET not in provider.store.path.read_text()
+
+
+class TestStaticBearerToken:
+    """A pre-shared token, for clients that offer a bearer field but no OAuth."""
+
+    STATIC = "static-bearer-value"
+
+    def _provider(self, tmp_path, **kw):
+        return CCTapOAuthProvider(
+            secret=SECRET, issuer_url=ISSUER, store=FileTokenStore(tmp_path / "t.json"), **kw
+        )
+
+    async def test_accepted_when_configured(self, tmp_path):
+        p = self._provider(tmp_path, static_token=self.STATIC)
+        tok = await p.load_access_token(self.STATIC)
+        assert tok is not None
+        assert tok.client_id == "cc-tap-static-bearer"
+        assert tok.expires_at is None
+
+    async def test_rejected_when_not_configured(self, tmp_path):
+        p = self._provider(tmp_path)
+        assert await p.load_access_token(self.STATIC) is None
+
+    async def test_wrong_value_rejected(self, tmp_path):
+        p = self._provider(tmp_path, static_token=self.STATIC)
+        assert await p.load_access_token("not-the-token") is None
+
+    async def test_empty_string_disables_it(self, tmp_path):
+        p = self._provider(tmp_path, static_token="")
+        assert p.static_token is None
+        assert await p.load_access_token("") is None
+
+    async def test_oauth_still_works_alongside(self, tmp_path):
+        """Enabling the static token must not break OAuth-issued tokens."""
+        p = self._provider(tmp_path, static_token=self.STATIC)
+        target = await p.authorize(p.fixed_client, make_params())
+        redirect = p.approve_pending(target.split("rid=")[1], SECRET)
+        code = redirect.split("code=")[1].split("&")[0]
+        loaded = await p.load_authorization_code(p.fixed_client, code)
+        issued = await p.exchange_authorization_code(p.fixed_client, loaded)
+
+        assert await p.load_access_token(issued.access_token) is not None
+        assert await p.load_access_token(self.STATIC) is not None
+
+    def test_refuses_to_reuse_mcp_secret(self, tmp_path):
+        with pytest.raises(ValueError, match="must not equal MCP_SECRET"):
+            self._provider(tmp_path, static_token=SECRET)
+
+    async def test_not_written_to_the_token_store(self, tmp_path):
+        p = self._provider(tmp_path, static_token=self.STATIC)
+        await p.load_access_token(self.STATIC)
+        p.store.save()
+        assert self.STATIC not in p.store.path.read_text()

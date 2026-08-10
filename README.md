@@ -97,6 +97,16 @@ Either way the browser lands on a consent page that requires `MCP_SECRET` before
 
 Redirect URIs are restricted to `claude.ai` and `claude.com` over HTTPS. Issued tokens are persisted (`CC_TAP_TOKEN_STORE`, mode 0600) so connections survive a restart.
 
+#### Pre-shared bearer token
+
+Some clients — Claude Code's own Streamable HTTP entry, for instance — offer a *bearer token* field instead of running the OAuth flow. Setting `CC_TAP_BEARER_TOKEN` makes `/mcp` accept that token **alongside** OAuth, so the claude.ai connector and a bearer-token client can both be connected at once.
+
+```bash
+export CC_TAP_BEARER_TOKEN=$(openssl rand -hex 32)
+```
+
+It bypasses the consent page and never expires, so treat it as a password. It must be a different value from `MCP_SECRET` — the server refuses to start otherwise, since a bearer token travels on every request while `MCP_SECRET` is typed into a form once. Leave it unset for OAuth-only.
+
 See [`.env.example`](.env.example) for every variable.
 
 ### Deploying

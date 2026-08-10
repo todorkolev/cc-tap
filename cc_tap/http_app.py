@@ -61,12 +61,16 @@ def build_http_app(*, host: str, port: int, public_url: str | None):
         )
 
     store_path = os.path.expanduser(os.environ.get("CC_TAP_TOKEN_STORE", DEFAULT_TOKEN_STORE))
-    provider = CCTapOAuthProvider(
-        secret=secret,
-        issuer_url=issuer,
-        store=FileTokenStore(store_path),
-        auto_approve=_env_flag("CC_TAP_OAUTH_AUTO_APPROVE", False),
-    )
+    try:
+        provider = CCTapOAuthProvider(
+            secret=secret,
+            issuer_url=issuer,
+            store=FileTokenStore(store_path),
+            auto_approve=_env_flag("CC_TAP_OAUTH_AUTO_APPROVE", False),
+            static_token=os.environ.get("CC_TAP_BEARER_TOKEN", "").strip(),
+        )
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
 
     auth_settings = AuthSettings(
         issuer_url=issuer,  # type: ignore[arg-type]
@@ -148,6 +152,12 @@ def run_http(*, host: str, port: int, public_url: str | None) -> None:
     logger.info("  Client Secret:  %s", provider.client_secret)
     logger.info("")
     logger.info("Approving the connection requires MCP_SECRET on the consent page.")
+    if provider.static_token:
+        logger.info(
+            "A pre-shared bearer token is also accepted (CC_TAP_BEARER_TOKEN, %d chars). "
+            "For clients that offer a bearer field but do not run the OAuth flow.",
+            len(provider.static_token),
+        )
     if provider.auto_approve:
         logger.warning("CC_TAP_OAUTH_AUTO_APPROVE is on — anyone who can reach this URL can connect.")
 

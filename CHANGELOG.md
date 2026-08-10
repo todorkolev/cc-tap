@@ -10,6 +10,9 @@
   Registration, and fixed client credentials derived from `MCP_SECRET`. Redirect
   URIs restricted to claude.ai / claude.com; issued tokens persisted to disk.
 - Consent page requiring `MCP_SECRET` before an authorization code is issued.
+- Optional pre-shared bearer token (`CC_TAP_BEARER_TOKEN`) accepted on `/mcp`
+  alongside OAuth, for clients that offer a bearer field but do not run the
+  OAuth flow. Refuses to start if set equal to `MCP_SECRET`.
 - `repo` filter on `list_sessions`; `include_mcp_config` on `get_session_info`.
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, and a pinned `requirements.lock`.
 
