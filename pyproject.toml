@@ -25,9 +25,11 @@ dependencies = [
     # so the <2 bound is load-bearing, not caution.
     "mcp>=1.29,<2",
     "requests>=2.32,<3",
-    # Pulled in by mcp, but imported directly by the HTTP transport.
+    # Pulled in by mcp, but imported directly: starlette/uvicorn by the HTTP
+    # transport, anyio to keep blocking client calls off the event loop.
     "starlette>=1.6,<2",
     "uvicorn>=0.35,<1",
+    "anyio>=4,<5",
 ]
 
 [project.scripts]

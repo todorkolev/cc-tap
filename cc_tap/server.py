@@ -1,6 +1,7 @@
 """MCP server exposing Claude Code session tools."""
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 
+import anyio
 import requests as req_lib
 from mcp.server.fastmcp import FastMCP
 
@@ -64,7 +66,21 @@ def _with_retry(fn):
         raise
 
 
-def list_sessions(status_filter: str = "", repo: str = "") -> str:
+async def _fetch(fn):
+    """Run a blocking client call on a worker thread.
+
+    FastMCP invokes a sync tool function directly on the event loop — there is
+    no thread offload — so any blocking work inside one stalls the entire
+    server, including the transport that has to deliver that tool's own
+    response. Over stdio this is merely rude; over HTTP it is fatal, because a
+    tool that blocks for its whole timeout never gets to write a reply.
+
+    Every tool is therefore async and reaches the network through here.
+    """
+    return await anyio.to_thread.run_sync(functools.partial(_with_retry, fn))
+
+
+async def list_sessions(status_filter: str = "", repo: str = "") -> str:
     """List all Claude Code sessions, with repo and status shown inline.
 
     Args:
@@ -72,7 +88,7 @@ def list_sessions(status_filter: str = "", repo: str = "") -> str:
         repo: Optional repo filter, matched case-insensitively as a substring
             (e.g. 'sigma' matches 'midt-bg/sigma'). Empty for all repos.
     """
-    sessions = _with_retry(lambda c: c.list_sessions())
+    sessions = await _fetch(lambda c: c.list_sessions())
     total = len(sessions)
 
     if status_filter == "active":
@@ -102,7 +118,7 @@ def list_sessions(status_filter: str = "", repo: str = "") -> str:
     return "\n".join(lines)
 
 
-def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
+async def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
     """Get details about a specific Claude Code session.
 
     Args:
@@ -111,7 +127,7 @@ def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
             Off by default — on a session with connectors it is a large repeated
             blob, often most of the payload, and is almost never what you want.
     """
-    s = _with_retry(lambda c: c.get_session(session_id))
+    s = await _fetch(lambda c: c.get_session(session_id))
     if not include_mcp_config:
         ctx = s.get("session_context")
         if isinstance(ctx, dict) and "mcp_config" in ctx:
@@ -122,14 +138,14 @@ def get_session_info(session_id: str, include_mcp_config: bool = False) -> str:
     return json.dumps(s, indent=2)
 
 
-def read_session(session_id: str, last_n: int = 20) -> str:
+async def read_session(session_id: str, last_n: int = 20) -> str:
     """Read recent conversation from a Claude Code session.
 
     Args:
         session_id: The session ID.
         last_n: Number of recent events to return (default 20).
     """
-    events = _with_retry(lambda c: c.get_events(session_id))
+    events = await _fetch(lambda c: c.get_events(session_id))
 
     conv = [e for e in events if e["type"] in ("user", "assistant", "result")]
     recent = conv[-last_n:]
@@ -151,7 +167,7 @@ def read_session(session_id: str, last_n: int = 20) -> str:
     return "\n\n".join(lines)
 
 
-def get_session_events(session_id: str, event_types: str = "", last_n: int = 50) -> str:
+async def get_session_events(session_id: str, event_types: str = "", last_n: int = 50) -> str:
     """Get raw events from a session, optionally filtered by type.
 
     Args:
@@ -159,7 +175,7 @@ def get_session_events(session_id: str, event_types: str = "", last_n: int = 50)
         event_types: Comma-separated types to filter (e.g. 'user,assistant'). Empty for all.
         last_n: Number of recent events to return (default 50).
     """
-    events = _with_retry(lambda c: c.get_events(session_id))
+    events = await _fetch(lambda c: c.get_events(session_id))
 
     if event_types:
         type_set = {t.strip() for t in event_types.split(",")}
@@ -169,18 +185,18 @@ def get_session_events(session_id: str, event_types: str = "", last_n: int = 50)
     return json.dumps(recent, indent=2, default=str)
 
 
-def send_message(session_id: str, message: str) -> str:
+async def send_message(session_id: str, message: str) -> str:
     """Send a message to a Claude Code session.
 
     Args:
         session_id: The session ID to send to.
         message: The message text to send.
     """
-    result = _with_retry(lambda c: c.send_message(session_id, message))
+    result = await _fetch(lambda c: c.send_message(session_id, message))
     return json.dumps(result, indent=2)
 
 
-def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interval: float = 1.5) -> str:
+async def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interval: float = 1.5) -> str:
     """Send a message to a Claude Code session and wait for the full response.
 
     Polls until the session produces a result event (turn complete), then returns
@@ -192,23 +208,27 @@ def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_interv
         timeout: Max seconds to wait for a response (default 120).
         poll_interval: Seconds between polls (default 1.5).
     """
-    # Initial calls use retry; polling loop uses client directly
-    events_before = _with_retry(lambda c: c.get_events(session_id))
+    # Every call goes through _fetch, including the polling loop: it keeps the
+    # event loop free, and it means a token refresh part-way through a long wait
+    # is retried rather than ending the wait.
+    events_before = await _fetch(lambda c: c.get_events(session_id))
     cursor = events_before[-1].get("uuid") if events_before else None
 
-    _with_retry(lambda c: c.send_message(session_id, message))
-    client = _get_client()
-    client.send_presence(session_id)
+    await _fetch(lambda c: c.send_message(session_id, message))
+    await _fetch(lambda c: c.send_presence(session_id))
 
     deadline = time.time() + timeout
     collected_text: list[str] = []
 
     while time.time() < deadline:
-        time.sleep(poll_interval)
+        await anyio.sleep(poll_interval)
         # Ask only for what is new. Re-reading the full history every tick would
         # mean several thousand events per poll on a long-running session, since
         # get_events now pages through all of it.
-        new_events = client.get_events(session_id, after_id=cursor)
+        # cursor bound as a default arg: it is rebound each iteration, and a
+        # late-binding closure over it would be a trap for any future refactor
+        # that stops awaiting immediately.
+        new_events = await _fetch(lambda c, _after=cursor: c.get_events(session_id, after_id=_after))
 
         if not new_events:
             continue
