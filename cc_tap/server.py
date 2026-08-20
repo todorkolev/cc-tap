@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from cc_tap.auth import load_oauth_token, load_org_uuid
 from cc_tap.client import CCRClient, extract_text
+from cc_tap.tailcache import TailCache
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,14 @@ SERVER_INSTRUCTIONS = "Bridge to Claude Code sessions — list, read, and intera
 
 _client: CCRClient | None = None
 _client_lock = threading.Lock()
+
+#: Indexes each session by its newest event id so the read tools serve the tail
+#: cheaply instead of walking the whole history (which timed out on huge
+#: sessions). See cc_tap/tailcache.py for the full rationale.
+_tail_cache = TailCache()
+
+#: Event types that count as "conversation" for read_session.
+_CONV_TYPES = ("user", "assistant", "result")
 
 
 def _build_client() -> CCRClient:
@@ -78,6 +87,64 @@ async def _fetch(fn):
     Every tool is therefore async and reaches the network through here.
     """
     return await anyio.to_thread.run_sync(functools.partial(_with_retry, fn))
+
+
+# --- tail-cache plumbing -------------------------------------------------
+
+def _normalize_sid(session_id: str) -> str:
+    """Stable cache key + fetch arg, independent of the prefix a caller used."""
+    raw = session_id.replace("session_", "").replace("cse_", "")
+    return f"session_{raw}"
+
+
+def _shared_page_fetch(sid: str, **params) -> dict:
+    """Fetch one event page via the shared client, with the 401 refresh."""
+    return _with_retry(lambda c: c.get_events_page(sid, **params))
+
+
+def _spawn_background_warm(sid: str, start_after: str | None) -> None:
+    """Finish indexing a large session off the request path.
+
+    Uses its own client (a fresh requests.Session) so it never shares one across
+    threads with in-flight requests. Continues the forward walk from where the
+    inline attempt stopped, then records the newest id (or releases the claim so
+    a later read can retry if it fails).
+    """
+
+    def worker():
+        try:
+            holder = {"client": _build_client()}
+
+            def fetch(inner_sid: str, **params) -> dict:
+                try:
+                    return holder["client"].get_events_page(inner_sid, **params)
+                except req_lib.HTTPError as e:
+                    if e.response is not None and e.response.status_code == 401:
+                        holder["client"] = _build_client()
+                        return holder["client"].get_events_page(inner_sid, **params)
+                    raise
+
+            newest = _tail_cache.walk_to_end(fetch, sid, start_after)
+            _tail_cache.complete_background_warm(sid, newest)
+            logger.info("Background index of %s complete (newest=%s)", sid, newest)
+        except Exception:
+            logger.exception("Background index of %s failed; will retry on next read", sid)
+            _tail_cache.abort_background_warm(sid)
+
+    threading.Thread(target=worker, name=f"warm-{sid[:16]}", daemon=True).start()
+
+
+def _indexing_message(session_id: str) -> str:
+    return (
+        f"Session {session_id} is large and is being indexed for fast reads. "
+        "This is a one-time background step — retry this call in a few seconds."
+    )
+
+
+def _recent_events(sid: str, want: int, keep) -> list[dict] | None:
+    return _tail_cache.recent_events(
+        sid, want, fetch_page=_shared_page_fetch, keep=keep, spawn_background=_spawn_background_warm
+    )
 
 
 async def list_sessions(status_filter: str = "", repo: str = "") -> str:
@@ -138,19 +205,8 @@ async def get_session_info(session_id: str, include_mcp_config: bool = False) ->
     return json.dumps(s, indent=2)
 
 
-async def read_session(session_id: str, last_n: int = 20) -> str:
-    """Read recent conversation from a Claude Code session.
-
-    Args:
-        session_id: The session ID.
-        last_n: Number of recent events to return (default 20).
-    """
-    events = await _fetch(lambda c: c.get_events(session_id))
-
-    conv = [e for e in events if e["type"] in ("user", "assistant", "result")]
-    recent = conv[-last_n:]
-
-    lines = [f"Session has {len(events)} total events, showing last {len(recent)} conversation events:\n"]
+def _format_conversation(recent: list[dict]) -> str:
+    lines = [f"Showing the last {len(recent)} conversation event(s), newest last:\n"]
     for ev in recent:
         if ev["type"] == "user":
             text = extract_text(ev.get("message", {}).get("content", ""))
@@ -167,22 +223,56 @@ async def read_session(session_id: str, last_n: int = 20) -> str:
     return "\n\n".join(lines)
 
 
+def _read_session_sync(session_id: str, last_n: int) -> str:
+    sid = _normalize_sid(session_id)
+    events = _recent_events(sid, last_n, keep=lambda e: e.get("type") in _CONV_TYPES)
+    if events is None:
+        return _indexing_message(session_id)
+    return _format_conversation(events)
+
+
+async def read_session(session_id: str, last_n: int = 20) -> str:
+    """Read recent conversation from a Claude Code session.
+
+    Returns the newest events regardless of how long the session is. The first
+    read of a very large session may return an "indexing, retry shortly" notice
+    while it is prepared in the background; retry and it returns immediately.
+
+    Args:
+        session_id: The session ID.
+        last_n: Number of recent conversation events to return (default 20).
+    """
+    return await anyio.to_thread.run_sync(functools.partial(_read_session_sync, session_id, last_n))
+
+
+def _get_session_events_sync(session_id: str, event_types: str, last_n: int) -> str:
+    sid = _normalize_sid(session_id)
+    if event_types:
+        type_set = {t.strip() for t in event_types.split(",")}
+        keep = lambda e: e.get("type") in type_set  # noqa: E731
+    else:
+        keep = lambda _e: True  # noqa: E731
+
+    events = _recent_events(sid, last_n, keep=keep)
+    if events is None:
+        return _indexing_message(session_id)
+    return json.dumps(events[-last_n:], indent=2, default=str)
+
+
 async def get_session_events(session_id: str, event_types: str = "", last_n: int = 50) -> str:
     """Get raw events from a session, optionally filtered by type.
+
+    Returns the newest events regardless of session length; see read_session for
+    the one-time "indexing" notice on very large sessions.
 
     Args:
         session_id: The session ID.
         event_types: Comma-separated types to filter (e.g. 'user,assistant'). Empty for all.
         last_n: Number of recent events to return (default 50).
     """
-    events = await _fetch(lambda c: c.get_events(session_id))
-
-    if event_types:
-        type_set = {t.strip() for t in event_types.split(",")}
-        events = [e for e in events if e["type"] in type_set]
-
-    recent = events[-last_n:]
-    return json.dumps(recent, indent=2, default=str)
+    return await anyio.to_thread.run_sync(
+        functools.partial(_get_session_events_sync, session_id, event_types, last_n)
+    )
 
 
 async def send_message(session_id: str, message: str) -> str:

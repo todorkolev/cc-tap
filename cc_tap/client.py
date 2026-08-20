@@ -175,6 +175,40 @@ class CCRClient:
 
         return events
 
+    def get_events_page(
+        self,
+        session_id: str,
+        *,
+        limit: int = MAX_EVENTS_PER_PAGE,
+        after_id: str | None = None,
+        before_id: str | None = None,
+    ) -> dict:
+        """Fetch a single page of events and return the raw envelope.
+
+        Unlike ``get_events`` (which walks forward to the end), this is one
+        request exposing the pagination cursors the tail cache needs:
+
+          * ``after_id``  — the page of events *following* that id (forward).
+          * ``before_id`` — the page of events *ending at* that id (backward);
+            the ``before_id`` event itself is included, so callers stepping
+            further back must de-duplicate on ``uuid``.
+
+        Events come back oldest-first within the page. Returns the body dict:
+        ``{"data": [...], "has_more": bool, "first_id": str, "last_id": str}``.
+        """
+        params: dict[str, object] = {"limit": max(1, min(limit, MAX_EVENTS_PER_PAGE))}
+        if after_id:
+            params["after_id"] = after_id
+        if before_id:
+            params["before_id"] = before_id
+        resp = self.http.get(
+            f"{API_BASE_URL}/v1/sessions/{self._sid(session_id)}/events",
+            params=params,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def send_presence(self, session_id: str) -> int:
         """Send client presence heartbeat. Returns seconds until next heartbeat."""
         resp = self.http.post(

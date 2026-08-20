@@ -9,7 +9,15 @@ import anyio
 import pytest
 
 from cc_tap.client import CCRSession
-from cc_tap.server import TOOLS, build_mcp, get_session_info, list_sessions, send_and_wait
+from cc_tap.server import (
+    TOOLS,
+    build_mcp,
+    get_session_events,
+    get_session_info,
+    list_sessions,
+    read_session,
+    send_and_wait,
+)
 
 
 def session(**overrides) -> CCRSession:
@@ -257,3 +265,73 @@ _REAL_SLEEP = anyio.sleep
 
 async def _noop_sleep(_d):
     await _REAL_SLEEP(0)
+
+
+class TestReadToolsThroughTailCache:
+    """read_session / get_session_events now serve the tail via the cache."""
+
+    async def test_read_session_formats_returned_tail(self):
+        events = [
+            {"type": "user", "message": {"content": "hello"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi back"}]}},
+            {"type": "result", "total_cost_usd": 0.02, "usage": {"input_tokens": 5, "output_tokens": 7}},
+        ]
+        with patch("cc_tap.server._recent_events", return_value=events):
+            out = await read_session("session_abc12345", last_n=20)
+        assert "[USER] hello" in out
+        assert "[ASSISTANT] hi back" in out
+        assert "cost=$0.0200" in out
+        assert "newest last" in out
+
+    async def test_read_session_returns_indexing_notice_while_warming(self):
+        with patch("cc_tap.server._recent_events", return_value=None):
+            out = await read_session("session_01MjkNQ3rJK1zBwkR1BurTfd")
+        assert "indexed" in out.lower()
+        assert "retry" in out.lower()
+        assert "session_01MjkNQ3rJK1zBwkR1BurTfd" in out
+
+    async def test_read_session_requests_conversation_types(self):
+        captured = {}
+
+        def fake(_sid, want, keep):
+            captured["keep"] = keep
+            return []
+
+        with patch("cc_tap.server._recent_events", side_effect=fake):
+            await read_session("session_abc12345")
+        keep = captured["keep"]
+        assert keep({"type": "assistant"}) and keep({"type": "result"})
+        assert not keep({"type": "control_request"})
+
+    async def test_get_session_events_returns_json_tail(self):
+        events = [{"uuid": "e1", "type": "user"}, {"uuid": "e2", "type": "assistant"}]
+        with patch("cc_tap.server._recent_events", return_value=events):
+            out = await get_session_events("session_abc12345", last_n=50)
+        assert json.loads(out) == events
+
+    async def test_get_session_events_indexing_notice(self):
+        with patch("cc_tap.server._recent_events", return_value=None):
+            out = await get_session_events("session_abc12345")
+        assert "retry" in out.lower()
+
+    async def test_get_session_events_type_filter_passed_through(self):
+        captured = {}
+
+        def fake(_sid, want, keep):
+            captured["keep"] = keep
+            return []
+
+        with patch("cc_tap.server._recent_events", side_effect=fake):
+            await get_session_events("session_abc12345", event_types="user,result")
+        keep = captured["keep"]
+        assert keep({"type": "user"}) and keep({"type": "result"})
+        assert not keep({"type": "assistant"})
+
+
+class TestSidNormalization:
+    def test_prefixes_collapse_to_one_key(self):
+        from cc_tap.server import _normalize_sid
+
+        assert _normalize_sid("abc123def") == "session_abc123def"
+        assert _normalize_sid("session_abc123def") == "session_abc123def"
+        assert _normalize_sid("cse_abc123def") == "session_abc123def"

@@ -17,6 +17,15 @@
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, and a pinned `requirements.lock`.
 
 ### Fixed
+- read_session / get_session_events now serve the newest events via a per-session
+  tail cache instead of walking the whole history on every call. The full walk
+  (added to fix the "stuck at 1000" bug) is O(total events); on a 12k-event
+  session it took ~30s and exceeded the relay's per-call timeout, so reads failed
+  with a bare "MCP tool call failed" while smaller sessions worked. The first read
+  of a very large session now returns an "indexing, retry shortly" notice while a
+  background thread walks it once; every read after is O(tail) and fast, and stays
+  fast as the session grows (only new events are fetched, and the tail is read
+  backward with before_id). No tool-schema change.
 - `get_events` now pages through the full event history. The API caps `limit`
   at 1000 per request and returns events oldest-first, so a single call returned
   the *oldest* 1000 — on any longer session every newer turn was invisible and
