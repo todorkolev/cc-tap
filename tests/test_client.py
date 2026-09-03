@@ -96,6 +96,56 @@ class TestCCRSessionEnrichment:
         assert (s.repo, s.status_bucket, s.status_detail) == ("", "", "")
 
 
+class TestCreateSession:
+    def _client(self):
+        return CCRClient(access_token="t", org_uuid="org")  # noqa: S106
+
+    def test_posts_project_context_and_environment(self, monkeypatch):
+        c = self._client()
+        calls = []
+
+        def fake_post(url, json=None, timeout=None):
+            calls.append((url, json, timeout))
+            return _FakeResp({"id": "session_abc12345", "environment_id": "env_123"})
+
+        monkeypatch.setattr(c.http, "post", fake_post)
+        result = c.create_session(" acme/widgets ", " env_123 ")
+
+        assert result["id"] == "session_abc12345"
+        assert calls == [
+            (
+                "https://api.anthropic.com/v1/sessions",
+                {
+                    "session_context": {
+                        "sources": [],
+                        "outcomes": [{"git_info": {"repo": "acme/widgets", "type": "github"}}],
+                    },
+                    "environment_id": "env_123",
+                },
+                (5, 30),
+            )
+        ]
+
+    def test_omits_empty_environment(self, monkeypatch):
+        c = self._client()
+        payloads = []
+        monkeypatch.setattr(
+            c.http,
+            "post",
+            lambda _url, json=None, timeout=None: (payloads.append(json), _FakeResp({"id": "session_x"}))[1],
+        )
+        c.create_session("acme/widgets")
+        assert "environment_id" not in payloads[0]
+
+    def test_rejects_empty_project_without_request(self, monkeypatch):
+        c = self._client()
+        monkeypatch.setattr(c.http, "post", lambda *args, **kwargs: None)
+        import pytest
+
+        with pytest.raises(ValueError, match="project must not be empty"):
+            c.create_session("  ")
+
+
 class TestGetEventsPagination:
     """The events endpoint caps limit at 1000 and returns oldest-first.
 

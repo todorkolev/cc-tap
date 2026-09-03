@@ -7,11 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import anyio
 import pytest
+import requests
 
 from cc_tap.client import CCRSession
 from cc_tap.server import (
     TOOLS,
     build_mcp,
+    create_session,
     get_session_events,
     get_session_info,
     list_sessions,
@@ -159,9 +161,51 @@ class TestGetSessionInfo:
         assert out["session_context"] == {"cwd": "/w"}
 
 
+class TestCreateSession:
+    async def test_creates_then_sends_initial_task(self, fake_client):
+        fake_client.create_session.return_value = {
+            "id": "session_new12345",
+            "environment_id": "env_123",
+        }
+        fake_client.send_message.return_value = {"ok": True}
+
+        out = json.loads(await create_session(" acme/widgets ", " fix the tests ", "env_123"))
+
+        fake_client.create_session.assert_called_once_with("acme/widgets", "env_123")
+        fake_client.send_message.assert_called_once_with("session_new12345", "fix the tests")
+        assert out == {
+            "session_id": "session_new12345",
+            "project": "acme/widgets",
+            "environment_id": "env_123",
+            "status": "created",
+            "initial_task_sent": True,
+        }
+
+    async def test_rejects_empty_task_before_creating(self, fake_client):
+        with pytest.raises(ValueError, match="task must not be empty"):
+            await create_session("acme/widgets", "  ")
+        fake_client.create_session.assert_not_called()
+
+    async def test_rejects_creation_response_without_id(self, fake_client):
+        fake_client.create_session.return_value = {"environment_id": "env_123"}
+        with pytest.raises(RuntimeError, match="did not include an id"):
+            await create_session("acme/widgets", "do work")
+        fake_client.send_message.assert_not_called()
+
+    async def test_reports_created_session_when_task_delivery_fails(self, fake_client):
+        fake_client.create_session.return_value = {"id": "session_new12345"}
+        fake_client.send_message.side_effect = requests.ConnectionError("delivery failed")
+
+        out = json.loads(await create_session("acme/widgets", "do work"))
+
+        assert out["session_id"] == "session_new12345"
+        assert out["status"] == "created_task_delivery_failed"
+        assert out["initial_task_sent"] is False
+
+
 class TestServerWiring:
-    def test_all_six_tools_registered(self):
-        assert len(TOOLS) == 6
+    def test_all_seven_tools_registered(self):
+        assert len(TOOLS) == 7
 
     async def test_build_mcp_registers_every_tool(self):
         server = build_mcp()
@@ -173,6 +217,7 @@ class TestServerWiring:
         tools = {t.name: t for t in await server.list_tools()}
         assert "repo" in tools["list_sessions"].inputSchema["properties"]
         assert "include_mcp_config" in tools["get_session_info"].inputSchema["properties"]
+        assert "environment_id" in tools["create_session"].inputSchema["properties"]
 
     async def test_include_mcp_config_defaults_false(self):
         server = build_mcp()

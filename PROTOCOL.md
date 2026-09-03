@@ -126,6 +126,25 @@ Session statuses: `requires_action`, `running`, `idle`, `archived`
 GET /v1/sessions/{session_id}
 ```
 
+### 2a. Create Session
+
+```
+POST /v1/sessions
+```
+
+```json
+{
+  "environment_id": "env_...",
+  "session_context": {
+    "sources": [],
+    "outcomes": [{"git_info": {"repo": "acme/widgets", "type": "github"}}]
+  }
+}
+```
+
+`environment_id` is optional. The initial user task is subsequently posted to
+the new session's events endpoint using the normal send-message payload.
+
 ### 3. Update Session Title
 
 ```
@@ -385,4 +404,3 @@ Things suspected but not confirmed. Contributions welcome.
 - **MCP Channels** — CC has experimental channel support (`claude/channel` capability)
   that appears to be feature-gated. If opened up, channels would enable real-time
   push notifications from the MCP server to the CC session, replacing polling.
-

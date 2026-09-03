@@ -205,6 +205,56 @@ async def get_session_info(session_id: str, include_mcp_config: bool = False) ->
     return json.dumps(s, indent=2)
 
 
+async def create_session(project: str, task: str, environment_id: str = "") -> str:
+    """Create a Claude Code session and give it its initial task.
+
+    Args:
+        project: GitHub repository slug to work on (for example, 'acme/widgets').
+        task: Initial task for the new session.
+        environment_id: Optional working-environment ID. Leave empty to use
+            the service's default environment for the selected project.
+    """
+    project = project.strip()
+    task = task.strip()
+    if not project:
+        raise ValueError("project must not be empty")
+    if not task:
+        raise ValueError("task must not be empty")
+
+    created = await _fetch(lambda c: c.create_session(project, environment_id))
+    session_id = created.get("id")
+    if not isinstance(session_id, str) or not session_id:
+        raise RuntimeError("Session creation response did not include an id")
+
+    try:
+        await _fetch(lambda c: c.send_message(session_id, task))
+    except req_lib.RequestException as exc:
+        # Creation is not transactional with event delivery. Preserve the ID
+        # of the session that now exists so callers can retry with
+        # send_message instead of accidentally creating a duplicate.
+        return json.dumps(
+            {
+                "session_id": session_id,
+                "project": project,
+                "environment_id": created.get("environment_id") or environment_id or None,
+                "status": "created_task_delivery_failed",
+                "initial_task_sent": False,
+                "error": str(exc),
+            },
+            indent=2,
+        )
+    return json.dumps(
+        {
+            "session_id": session_id,
+            "project": project,
+            "environment_id": created.get("environment_id") or environment_id or None,
+            "status": "created",
+            "initial_task_sent": True,
+        },
+        indent=2,
+    )
+
+
 def _format_conversation(recent: list[dict]) -> str:
     lines = [f"Showing the last {len(recent)} conversation event(s), newest last:\n"]
     for ev in recent:
@@ -372,6 +422,7 @@ async def send_and_wait(session_id: str, message: str, timeout: int = 120, poll_
 TOOLS = (
     list_sessions,
     get_session_info,
+    create_session,
     read_session,
     get_session_events,
     send_message,

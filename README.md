@@ -60,6 +60,7 @@ Add to `claude_desktop_config.json`:
 |------|-------------|
 | `list_sessions` | List all CC sessions, with repo and status inline (filter by `status_filter`, `repo`) |
 | `get_session_info` | Get details about a specific session (`include_mcp_config` for the full connector blob) |
+| `create_session` | Create a session for a GitHub project, send its initial task, and optionally select an `environment_id` |
 | `read_session` | Read recent conversation from a session |
 | `get_session_events` | Get raw events, optionally filtered by type |
 | `send_message` | Send a message to a CC session (fire and forget) |
@@ -133,6 +134,13 @@ Restart=on-failure
 cc-tap reads your Claude Code OAuth credentials (from macOS Keychain or `~/.claude/.credentials.json`) and talks to the same API that Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) web UI uses. No additional authentication needed.
 
 Sessions are accessed via HTTP polling (~1.5s latency). Messages you send appear in the target CC session as if typed by the user.
+
+`create_session` takes a repository slug such as `acme/widgets` and a non-empty
+initial task. The optional `environment_id` selects an existing working
+environment; when omitted, Claude Code chooses the default environment for the
+project. Creation and delivery of the initial task are two API operations, so a
+delivery error may leave an empty session that can be resumed with
+`send_message`.
 
 ## Limitations
 

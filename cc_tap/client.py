@@ -109,6 +109,35 @@ class CCRClient:
         resp.raise_for_status()
         return resp.json()
 
+    def create_session(self, project: str, environment_id: str = "") -> dict:
+        """Create a remote session for a GitHub project.
+
+        The Remote Control API represents the selected repository in the same
+        ``session_context.outcomes[].git_info`` shape returned by its read
+        endpoints.  ``environment_id`` is optional: omitting it lets the
+        service choose its default working environment.
+        """
+        project = project.strip()
+        if not project:
+            raise ValueError("project must not be empty")
+
+        payload: dict[str, object] = {
+            "session_context": {
+                "sources": [],
+                "outcomes": [{"git_info": {"repo": project, "type": "github"}}],
+            }
+        }
+        if environment_id.strip():
+            payload["environment_id"] = environment_id.strip()
+
+        resp = self.http.post(
+            f"{API_BASE_URL}/v1/sessions",
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def get_events(
         self,
         session_id: str,
